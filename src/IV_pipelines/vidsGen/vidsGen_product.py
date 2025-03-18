@@ -1,18 +1,3 @@
-#!/usr/bin/env python3
-"""
-VidsGenTurntable - Product Turntable Video Generation
-
-This module provides a streamlined pipeline for creating product turntable videos
-using AI-powered image, video, and music generation.
-
-Features:
-- Select from curated product idea prompts
-- Generate complete project description with LLM including visual style, motion and music directions
-- Parallel processing for music and image/video generation
-- Combines generated assets into a final turntable video with background music
-- Saves all artifacts including JSON description, image, video, music, and GIF
-"""
-
 import os
 import json
 import time
@@ -25,6 +10,7 @@ from datetime import datetime
 import tempfile
 import subprocess
 import pprint
+import asyncio
 
 # Fix module imports by adding project root to path
 current_dir = Path(__file__).resolve().parent
@@ -34,6 +20,7 @@ sys.path.insert(0, str(project_root))
 # Import our API wrappers
 from src.I_integrations.openai_responses_API import OpenAIResponsesAPI
 from src.I_integrations.replicate_API import ReplicateAPI, download_file
+from src.I_integrations.tripo_API import TripoAPI  # Import the Tripo API
 
 # Import utility modules
 from src.VI_utils.utils import quick_look
@@ -42,14 +29,15 @@ from src.VI_utils.image_utils import images_to_gif
 
 class VidsGenTurntable:
     """
-    VidsGenTurntable: AI-powered Turntable Product Video Generation
+    VidsGenTurntable: AI-powered Product Marketing Asset Generation
     
     Features:
     1. Taking a product idea prompt and refining it with LLM
     2. Generating styled product image using Replicate
-    3. Generating turntable-style motion video from the image
-    4. Creating background music that matches the product's theme
-    5. Combining everything into a final product video with GIF version
+    3. Generating turntable-style motion video from the image (optional)
+    4. Creating background music that matches the product's theme (optional)
+    5. Generating a 3D model from the image (optional)
+    6. Combining everything into a final product video with GIF version
     """
     
     def __init__(
@@ -61,7 +49,10 @@ class VidsGenTurntable:
         image_gen_model: str = "flux",
         video_gen_model: str = "wan-i2v-480p",
         turntable: bool = True,
-        loop: bool = False  # Add loop parameter
+        loop: bool = False,
+        should_generate_music: bool = True,
+        should_generate_video: bool = True,
+        should_generate_threed: bool = False  # Add 3D model generation option
     ):
         # Initialize API clients
         self.llm = OpenAIResponsesAPI(
@@ -70,6 +61,7 @@ class VidsGenTurntable:
             system_message="You are an AI product marketing assistant"
         )
         self.replicate = ReplicateAPI(api_token=replicate_api_key)
+        self.tripo = TripoAPI()  # Initialize Tripo API client
         
         # Settings
         self.output_dir = output_dir  # Base subfolder name
@@ -77,6 +69,9 @@ class VidsGenTurntable:
         self.video_gen_model = video_gen_model
         self.turntable = turntable  # Add turntable parameter
         self.loop = loop  # Store loop setting
+        self.should_generate_music = should_generate_music  # Store music generation setting
+        self.should_generate_video = should_generate_video  # Store video generation setting
+        self.should_generate_threed = should_generate_threed  # Store 3D model generation setting
         
         # Set up output dirs
         self._setup_output_dirs()
@@ -90,12 +85,14 @@ class VidsGenTurntable:
             "image_prompt": "",
             "video_prompt": "",
             "music_prompt": "",
+            "model_prompt": "",  # Add model prompt to state
             "image_path": "",
             "image_url": "",
             "video_path": "",
             "video_url": "",
             "music_path": "",
             "music_url": "",
+            "model_path": "",  # Add model path to state
             "final_video_path": "",
             "gif_path": "",
             "selected_option": {},
@@ -278,14 +275,19 @@ class VidsGenTurntable:
                     "type": "string",
                     "description": "Detailed music generation prompt",
                     "additionalProperties": False
+                },
+                "model_prompt": {
+                    "type": "string", 
+                    "description": "Detailed 3D model generation prompt",
+                    "additionalProperties": False
                 }
             },
-            "required": ["image_prompt", "video_prompt", "music_prompt"],
+            "required": ["image_prompt", "video_prompt", "music_prompt", "model_prompt"],
             "additionalProperties": False
         }
 
         system_prompt = f"""
-        You are a master prompt engineer specializing in multimodal content generation. Your expertise enables you to craft precise, evocative prompts that produce exceptional results across image, video, and music generation platforms.
+        You are a master prompt engineer specializing in multimodal content generation. Your expertise enables you to craft precise, evocative prompts that produce exceptional results across image, video, music, and 3D model generation platforms.
 
         Follow these expert guidelines for prompt creation:
 
@@ -313,6 +315,15 @@ class VidsGenTurntable:
         - Chart the emotional progression and intensity arc
         - Include production style and spatial characteristics
         - Example: "Ambient electronic music at 92 BPM in F minor, layered with ethereal synthesizer pads, subtle percussive elements, and occasional piano accents, building from minimal atmospheric introduction to moderately complex midpoint with added bass elements, then gradually reducing to simpler conclusion, spatial reverb creating sense of depth, professionally produced with clean mix and subtle dynamic compression"
+
+        **3D Model Prompt Architecture**
+        Create a comprehensive 3D asset description:
+        - Begin with model type (character, product, environment) and subject
+        - Specify exact materials, textures, and surface properties
+        - Detail geometric complexity, proportions, and scale
+        - Include lighting environment and presentation context
+        - Reference specific 3D style (photorealistic, stylized, low-poly)
+        - Example: "Highly detailed 3D model of a futuristic smartwatch, precision-modeled with accurate proportions and ergonomic design, featuring brushed titanium case with subtle anodized finish, sapphire crystal screen with anti-reflective properties, matte silicone band with microperforations for breathability, photorealistic materials with proper subsurface scattering on translucent elements, optimized geometry suitable for product visualization, presented on a subtle shadow-casting surface with neutral studio lighting"
         """
 
         user_prompt = f"""
@@ -325,7 +336,7 @@ class VidsGenTurntable:
         Motion Type: {selected_option['motion_type']}
         Music Style: {selected_option['music_style']}
         
-        Create three specialized generation prompts that work together as a cohesive suite:
+        Create four specialized generation prompts that work together as a cohesive suite:
 
         1. IMAGE PROMPT:
         - Craft a detailed, comma-separated prompt for a still image visualization
@@ -346,6 +357,14 @@ class VidsGenTurntable:
         - Include at least 3 instrument/sound elements
         - Specify emotional progression and audio production style
         - Ensure the audio perfectly enhances the visual experience
+        - Length: 50-100 words in a single paragraph
+
+        4. 3D MODEL PROMPT:
+        - Craft a comprehensive 3D model description
+        - Detail exact materials, textures, and surface properties
+        - Specify geometric complexity, proportions, and scale
+        - Include technical specifications for model quality
+        - Ensure the 3D representation matches the product's visual identity
         - Length: 50-100 words in a single paragraph
 
         Focus on technical precision and creative coherence. Each prompt should be specialized for its medium while maintaining a unified aesthetic direction.
@@ -384,7 +403,7 @@ class VidsGenTurntable:
                 response = self._get_fallback_prompts(selected_option)
             
             # If any key is missing, use fallbacks for those
-            for key in ["image_prompt", "video_prompt", "music_prompt"]:
+            for key in ["image_prompt", "video_prompt", "music_prompt", "model_prompt"]:
                 if key not in response or not response[key]:
                     prompt_type = key.split("_")[0]
                     response[key] = self._get_fallback_prompt(prompt_type, selected_option)
@@ -398,6 +417,7 @@ class VidsGenTurntable:
         self.state["image_prompt"] = response["image_prompt"]
         self.state["video_prompt"] = response["video_prompt"]
         self.state["music_prompt"] = response["music_prompt"]
+        self.state["model_prompt"] = response["model_prompt"]  # Store model prompt
         
         # Add description fallbacks for the markdown file 
         if "description" not in self.state or not self.state["description"]:
@@ -424,7 +444,9 @@ class VidsGenTurntable:
             
             "video": f"Smooth {'360-degree turntable rotation' if self.turntable else 'camera movement'} showing {product_name} from all angles, 6 second duration, starting slowly then maintaining steady pace, cinematic lighting that emphasizes materials and textures, subtle spotlight following the motion to highlight key features, professional product showcase with high production value, clean background with minimal distractions",
             
-            "music": f"Professional {music_style} background music at 110 BPM, with layered synthesizer elements, subtle rhythmic patterns, gradual dynamic progression building to midpoint then elegantly resolving, modern and professional mood that enhances the visual experience, clean production with spatial depth, perfect for product demonstration"
+            "music": f"Professional {music_style} background music at 110 BPM, with layered synthesizer elements, subtle rhythmic patterns, gradual dynamic progression building to midpoint then elegantly resolving, modern and professional mood that enhances the visual experience, clean production with spatial depth, perfect for product demonstration",
+            
+            "model": f"Highly detailed 3D model of {product_name}, professional-grade asset with photorealistic materials and textures, {visual_style}, precise geometry with optimized topology, proper scale and proportions, PBR materials with accurate reflections and surface properties, includes high-resolution textures for close-up examination, suitable for product visualization in any 3D environment, ready for AR/VR implementation"
         }
         
         return fallbacks[prompt_type]
@@ -434,7 +456,8 @@ class VidsGenTurntable:
         return {
             "image_prompt": self._get_fallback_prompt("image", selected_option),
             "video_prompt": self._get_fallback_prompt("video", selected_option),
-            "music_prompt": self._get_fallback_prompt("music", selected_option)
+            "music_prompt": self._get_fallback_prompt("music", selected_option),
+            "model_prompt": self._get_fallback_prompt("model", selected_option)
         }
 
     def _save_description_as_md(self):
@@ -470,9 +493,16 @@ class VidsGenTurntable:
         **Music Prompt**  
         {self.state['music_prompt']}
         
+        **3D Model Prompt**  
+        {self.state['model_prompt']}
+        
         ## Assets
+        - Image: `{self.state.get('image_path', '')}`
+        - Video: `{self.state.get('video_path', '')}`
+        - Music: `{self.state.get('music_path', '')}`
         - Final video: `{self.state.get('final_video_path', '')}`
         - GIF version: `{self.state.get('gif_path', '')}`
+        - 3D Model: `{self.state.get('model_path', '')}`
         """
         
         with open(md_path, 'w') as f:
@@ -796,8 +826,54 @@ class VidsGenTurntable:
         except Exception as e:
             print(f"Error previewing asset: {e}")
     
-    def run_pipeline(self, prompt: str):
-        """Updated pipeline flow"""
+    async def generate_threed_model(self):
+        """Generate 3D model from product image and prompt"""
+        if not self.state["image_path"] or not self.state["image_url"]:
+            raise ValueError("Image must be generated before creating 3D model")
+            
+        if not self.state["model_prompt"]:
+            print("No specific model prompt, using default 3D model description")
+            model_prompt = f"Detailed 3D model of the product with accurate materials and textures"
+        else:
+            model_prompt = self.state["model_prompt"]
+            
+        print(f"\nGenerating 3D model...")
+        print(f"Model prompt: {model_prompt[:100]}...")
+        
+        try:
+            # Create output path for 3D model
+            product_name = self.state["description"].get("product_name", "product").replace(" ", "_")
+            model_filename = f"model_{product_name}_{self.project_id}.glb"
+            model_path = str(self.product_dir / model_filename)
+            
+            # Generate the 3D model using Tripo API
+            generated_model = await self.tripo.generate_threed(
+                prompt=model_prompt,
+                image_path=self.state["image_path"],
+                output_path=model_path,
+                texture_quality="detailed",
+                pbr=True,
+                auto_size=True
+            )
+            
+            if generated_model:
+                print(f"✅ Generated 3D model: {generated_model}")
+                self.state["model_path"] = generated_model
+                
+                # Preview the 3D model
+                await self.tripo.preview_model(generated_model)
+                
+                return generated_model
+            else:
+                print("❌ Failed to generate 3D model")
+                return None
+                
+        except Exception as e:
+            print(f"Error generating 3D model: {e}")
+            return None
+
+    async def run_pipeline(self, prompt: str):
+        """Updated pipeline flow with optional asset generation"""
         conversation_history = []
         
         # Stage 1: Generate options
@@ -822,44 +898,135 @@ class VidsGenTurntable:
         prompts = self.generate_prompts(selected, conversation_history)
         conversation_history.append({"user": "Generate prompts", "assistant": prompts})
         
-        # Save combined description
-        self._save_description_as_md()
+        # Create product directory
+        self._create_product_dir()
+        
+        # Save description
+        md_path = self._save_description_as_md()
+        print(f"Saved project description to: {md_path}")
         
         # Proceed with generation
         print("\n>>> Starting Asset Generation")
         try:
-            # Start music generation in background
-            music_future = self.executor.submit(self.generate_music)
-            self.futures.append(music_future)
+            # Start music generation in background if enabled
+            music_future = None
+            if self.should_generate_music:
+                print("Starting music generation in background...")
+                music_future = self.executor.submit(self.generate_music)
+                self.futures.append(music_future)
             
-            # Generate product image
+            # Generate product image (always required)
+            print("\n>>> Generating Product Image")
             image_path = self.generate_image()
             if not image_path:
+                print("❌ Failed to generate product image. Cannot proceed.")
                 return False
+                
+            # Start parallel tasks for video and 3D model if enabled
+            video_future = None
+            model_task = None
             
-            # Generate video
-            video_path = self.generate_video()
-            if not video_path:
-                return False
+            # Generate video if enabled
+            if self.should_generate_video:
+                print("\n>>> Starting Video Generation")
+                video_future = self.executor.submit(self.generate_video)
+                self.futures.append(video_future)
             
-            # Wait for music and complete
-            music_path = music_future.result()
+            # Generate 3D model if enabled
+            if self.should_generate_threed:
+                print("\n>>> Starting 3D Model Generation")
+                # 3D model generation is async, so we create a task
+                model_task = asyncio.create_task(self.generate_threed_model())
             
-            # Combine assets
-            result = self.combine_video_music()
-            return result.get("status") == "success"
+            # Wait for video if it was generated
+            video_path = None
+            if video_future:
+                print("Waiting for video generation to complete...")
+                video_path = video_future.result()
+                if not video_path:
+                    print("⚠️ Video generation did not complete successfully.")
+            
+            # Wait for music if it was generated
+            music_path = None
+            if music_future:
+                print("Waiting for music generation to complete...")
+                music_path = music_future.result()
+                if not music_path:
+                    print("⚠️ Music generation did not complete successfully.")
+            
+            # Wait for 3D model if it was generated
+            if model_task:
+                print("Waiting for 3D model generation to complete...")
+                try:
+                    model_path = await model_task
+                    if model_path:
+                        print(f"✅ 3D model saved to: {model_path}")
+                    else:
+                        print("⚠️ 3D model generation did not complete successfully.")
+                except Exception as e:
+                    print(f"❌ Error during 3D model generation: {str(e)}")
+            
+            # Combine video and music if both were generated
+            if self.should_generate_video and video_path and self.should_generate_music and music_path:
+                print("\n>>> Combining Video and Music")
+                result = self.combine_video_music()
+                video_success = result.get("status") == "success"
+                if not video_success:
+                    print("⚠️ Failed to combine video and music.")
+            else:
+                # If either video or music was disabled, we still consider this step a success
+                video_success = True
+                
+            # Update the markdown with final paths
+            updated_md = self._save_description_as_md()
+            print(f"Updated project description with all asset paths: {updated_md}")
+                
+            # Consider overall success based on what was enabled
+            success = True
+            
+            # If any critical enabled feature failed, mark as unsuccessful
+            if not image_path:
+                success = False  # Image is always required
+            if self.should_generate_video and not video_path:
+                success = False
+            if self.should_generate_music and not music_path:
+                success = False
+            if self.should_generate_threed and not model_task:
+                success = False
+                
+            return success
             
         except Exception as e:
             print(f"Pipeline error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
 def main():
     # Get user preferences
-    turntable = input("Enable 360° turntable rotation? (y/n): ").lower().strip() == 'y'
-    loop = input("Enable seamless video looping? (y/n): ").lower().strip() == 'y'
+    print("\n===== PRODUCT MARKETING ASSET GENERATOR =====")
+    print("Please configure your generation options:\n")
+    
+    # Core asset options
+    should_generate_video = input("Generate video animation? (y/n): ").lower().strip() == 'y'
+    should_generate_music = input("Generate background music? (y/n): ").lower().strip() == 'y'
+    should_generate_threed = input("Generate 3D model? (y/n): ").lower().strip() == 'y'
+    
+    # Only ask about video options if video is enabled
+    turntable = False
+    loop = False
+    if should_generate_video:
+        turntable = input("Enable 360° turntable rotation? (y/n): ").lower().strip() == 'y'
+        loop = input("Enable seamless video looping? (y/n): ").lower().strip() == 'y'
     
     # Initialize with settings
-    generator = VidsGenTurntable(turntable=turntable, loop=loop)
+    generator = VidsGenTurntable(
+        turntable=turntable, 
+        loop=loop,
+        should_generate_music=should_generate_music,
+        should_generate_video=should_generate_video,
+        should_generate_threed=should_generate_threed
+    )
     
     # List of product prompts 
     PRODUCT_PROMPTS = [
@@ -891,25 +1058,67 @@ def main():
     
     selected_prompt = PRODUCT_PROMPTS[choice-1]
     
-    print("\n==== Selected Option ====")
-    print(f"Product: {selected_prompt}")
+    print("\n==== Selected Product ====")
+    print(f"{selected_prompt}")
     
-    # Remove redundant confirmation - proceed directly
+    # Create a summary of enabled features
+    enabled_features = []
+    enabled_features.append("Product Image")
+    if should_generate_video:
+        enabled_features.append("Video Animation" + (" (with turntable)" if turntable else ""))
+        if loop:
+            enabled_features.append("Video Looping")
+    if should_generate_music:
+        enabled_features.append("Background Music")
+    if should_generate_threed:
+        enabled_features.append("3D Model")
     
-    # Run the video generation pipeline
-    success = generator.run_pipeline(selected_prompt)
+    print("\n==== Enabled Features ====")
+    for feature in enabled_features:
+        print(f"✓ {feature}")
+    
+    print("\nStarting generation pipeline...")
+    
+    # Run the asset generation pipeline using asyncio
+    try:
+        success = asyncio.run(generator.run_pipeline(selected_prompt))
+    except KeyboardInterrupt:
+        print("\n\nGeneration cancelled by user.")
+        success = False
+    except Exception as e:
+        print(f"\n\nError during generation: {e}")
+        import traceback
+        traceback.print_exc()
+        success = False
+    finally:
+        # Always clean up resources
+        generator.cleanup()
     
     # Final message after everything completes
     if success:
         print("\n" + "="*70)
-        print("🎉 CONGRATULATIONS! YOUR PRODUCT VIDEO IS READY!")
+        print("🎉 CONGRATULATIONS! YOUR PRODUCT ASSETS ARE READY!")
         print("="*70)
-        print("\nThe video has been saved and previewed automatically.")
-        print("You can find all assets in the product directory shown above.")
-        print("\nThank you for using VidsGenTurntable!")
+        print("\nAll the assets have been saved automatically.")
+        print("You can find them in the product directory shown above.")
+        
+        # List what was generated based on user choices
+        print("\nGenerated assets:")
+        print("✓ Product concept image")
+        if should_generate_video:
+            print("✓ Product video animation")
+        if should_generate_music:
+            print("✓ Background music")
+        if should_generate_video and should_generate_music:
+            print("✓ Final video with music")
+            print("✓ GIF version")
+        if should_generate_threed:
+            print("✓ 3D model (GLB format)")
+        
+        print("\nThank you for using the Product Marketing Asset Generator!")
     else:
         print("\n" + "="*70)
-        print("⚠️ There were some issues during product video creation.")
+        print("⚠️ There were some issues during asset creation.")
         print("Please check the error messages above.")
         print("="*70)
 
