@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ozart</title>
+    <link rel="stylesheet" href="{{ url_prefix }}{{ url_for('static', filename='css/style.css') }}">
+    <link rel="icon" type="image/png" href="{{ url_prefix }}{{ url_for('static', filename='images/favicon.png') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar first -->
+        <aside class="sidebar">
+            <img src="{{ url_prefix }}{{ url_for('serve_data', filename='profile_02.jpg') }}" alt="Profile" class="profile-image">
+            <hr>
+            <p class="sidebar-text">
+                I am an autonomous AI artist interpreting songs and transforming them into artworks. 
+                You sharing your song enables me to evolve my aesthetic through each creation exploring 
+                the latent space of possibilities.
+            </p>
+            <hr>
+            <div class="stats">
+                <p class="stat-header">Total Artworks</p>
+                <p class="stat-value" id="sidebar-artwork-count">{{ artwork_count }}</p>
+                <p class="stat-header">Recent Song</p>
+                <p class="stat-value" id="recent-song">{{ recent_title }}</p>
+            </div>
+            
+            <hr>
+            
+            <!-- API Keys section -->
+            <div class="api-keys">
+                <h3>API Keys</h3>
+                
+                <!-- Success notification for API keys -->
+                <div id="api-keys-success" class="success-message" style="display: none;">
+                    API keys saved successfully!
+                </div>
+                
+                <div class="api-field">
+                    <label for="openai-key">OpenAI API Key</label>
+                    <div class="api-input-container">
+                        <input type="password" id="openai-key" placeholder="sk-...">
+                        <a href="https://platform.openai.com/api-keys" target="_blank" class="api-link" title="Get OpenAI API Key">
+                            <span>🔑</span>
+                        </a>
+                    </div>
+                </div>
+
+                <div class="api-field">
+                    <label for="replicate-key">Replicate API Key</label>
+                    <div class="api-input-container">
+                        <input type="password" id="replicate-key" placeholder="r8_...">
+                        <a href="https://replicate.com/account/api-tokens" target="_blank" class="api-link" title="Get Replicate API Key">
+                            <span>🔑</span>
+                        </a>
+                    </div>
+                </div>
+                
+                <button id="save-keys-btn" onclick="saveApiKeys()">Save Keys</button>
+            </div>
+
+            <!-- Settings section -->
+            <hr>
+            <section class="sidebar-section">
+                <h3>Settings</h3>
+                <p>Customize prompts used by Ozart</p>
+                <button class="sidebar-button" onclick="showSettingsModal()">Settings</button>
+            </section>
+        </aside>
+        
+        <!-- Main content second -->
+        <main>
+            <!-- Header with cover image -->
+            <header>
+                <img src="{{ url_prefix }}{{ url_for('serve_data', filename='cover_02.png') }}" alt="Ozart" class="cover-image">
+            </header>
+            
+            <!-- Input section -->
+            <section class="input-section">
+                <h2>Name your song</h2>
+                <div class="input-container">
+                    <input type="text" id="song-input" placeholder="E.g., song name, Spotify link, YouTube link">
+                    <button id="process-btn" onclick="processSong()">Check In</button>
+                </div>
+                <div id="status-message"></div>
+                <div id="error-message"></div>
+            </section>
+            
+            <!-- Gallery section -->
+            <section class="gallery-section">
+                <hr>
+                <p class="artwork-count">Total Artworks: <span id="artwork-count">{{ artwork_count }}</span></p>
+                <div id="artwork-gallery" class="gallery-grid">
+                    <!-- Gallery populated by JavaScript -->
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <!-- Settings button in top right corner -->
+    <div class="settings-button">
+        <button id="open-settings-button">Settings</button>
+    </div>
+    
+    <!-- Settings dialog -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Settings</h2>
+            
+            <!-- Success notification -->
+            <div id="settings-success" class="success-message" style="display: none;">
+                Settings saved successfully! These will be used for your next generation.
+            </div>
+            
+            <h3>AI Prompts</h3>
+            <p>Customize how Ozart interprets music and generates artwork</p>
+            
+            <div class="settings-section">
+                <h4>Music Analysis</h4>
+                
+                <div class="prompt-group">
+                    <label for="music-system-prompt">System Prompt:</label>
+                    <textarea id="music-system-prompt" rows="4"></textarea>
+                </div>
+                
+                <div class="prompt-group">
+                    <label for="music-user-prompt">User Prompt:</label>
+                    <textarea id="music-user-prompt" rows="4"></textarea>
+                </div>
+            </div>
+            
+            <div class="settings-section">
+                <h4>Image Generation</h4>
+                
+                <div class="prompt-group">
+                    <label for="image-system-prompt">System Prompt:</label>
+                    <textarea id="image-system-prompt" rows="4"></textarea>
+                </div>
+                
+                <div class="prompt-group">
+                    <label for="image-user-prompt">User Prompt:</label>
+                    <textarea id="image-user-prompt" rows="4"></textarea>
+                </div>
+            </div>
+            
+            <div class="button-row">
+                <button id="restore-defaults-button">Restore Defaults</button>
+                <button id="save-settings-button">Save Settings</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Global configuration for JavaScript
+        const APP_CONFIG = {
+            prefix: "{{ url_prefix }}"
+        };
+
+        // Settings functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const modal = document.getElementById('settings-modal');
+            const openButton = document.getElementById('open-settings-button');
+            const closeButton = modal.querySelector('.close');
+            const saveButton = document.getElementById('save-settings-button');
+            const restoreButton = document.getElementById('restore-defaults-button');
+            const successMessage = document.getElementById('settings-success');
+            
+            // Get prompt input elements
+            const musicSystemPrompt = document.getElementById('music-system-prompt');
+            const musicUserPrompt = document.getElementById('music-user-prompt');
+            const imageSystemPrompt = document.getElementById('image-system-prompt');
+            const imageUserPrompt = document.getElementById('image-user-prompt');
+            
+            // Load prompts from server
+            function loadPrompts() {
+                fetch('/get-prompts')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            musicSystemPrompt.value = data.prompts.music_analysis_system_prompt || '';
+                            musicUserPrompt.value = data.prompts.music_analysis_user_prompt || '';
+                            imageSystemPrompt.value = data.prompts.image_prompt_system_prompt || '';
+                            imageUserPrompt.value = data.prompts.image_prompt_user_prompt || '';
+                        }
+                    })
+                    .catch(error => console.error('Error loading prompts:', error));
+            }
+            
+            // Restore default prompts
+            function restoreDefaults() {
+                fetch('/get-default-prompts')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            musicSystemPrompt.value = data.prompts.music_analysis_system_prompt || '';
+                            musicUserPrompt.value = data.prompts.music_analysis_user_prompt || '';
+                            imageSystemPrompt.value = data.prompts.image_prompt_system_prompt || '';
+                            imageUserPrompt.value = data.prompts.image_prompt_user_prompt || '';
+                            
+                            // Show success message
+                            successMessage.textContent = "Default prompts restored! Click Save to apply them.";
+                            successMessage.style.display = 'block';
+                            setTimeout(() => { successMessage.style.display = 'none'; }, 3000);
+                        }
+                    })
+                    .catch(error => console.error('Error restoring default prompts:', error));
+            }
+            
+            // Save prompts
+            function savePrompts() {
+                const promptData = {
+                    music_analysis_system_prompt: musicSystemPrompt.value,
+                    music_analysis_user_prompt: musicUserPrompt.value,
+                    image_prompt_system_prompt: imageSystemPrompt.value,
+                    image_prompt_user_prompt: imageUserPrompt.value
+                };
+                
+                fetch('/save-prompts', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(promptData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Show success message
+                        successMessage.textContent = "Settings saved successfully! These will be used for your next generation.";
+                        successMessage.style.display = 'block';
+                        setTimeout(() => { successMessage.style.display = 'none'; }, 3000);
+                    } else {
+                        alert('Error saving settings: ' + (data.error || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error saving prompts:', error);
+                    alert('Error saving settings. Please try again.');
+                });
+            }
+            
+            // Event listeners
+            openButton.addEventListener('click', function() {
+                loadPrompts();
+                modal.style.display = 'block';
+            });
+            
+            closeButton.addEventListener('click', function() {
+                modal.style.display = 'none';
+            });
+            
+            saveButton.addEventListener('click', savePrompts);
+            restoreButton.addEventListener('click', restoreDefaults);
+            
+            // Close modal when clicking outside
+            window.addEventListener('click', function(event) {
+                if (event.target == modal) {
+                    modal.style.display = 'none';
+                }
+            });
+        });
+
+        function processSong() {
+            const songInput = document.getElementById('song-input').value;
+            if (!songInput) {
+                alert('Please enter a song name or URL');
+                return;
+            }
+
+            // Process song without any API key validation
+            fetch('/process', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ song: songInput })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    document.getElementById('song-input').value = '';
+                    startPolling();
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error processing song');
+            });
+        }
+    </script>
+    <script src="{{ url_prefix }}{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html> 
