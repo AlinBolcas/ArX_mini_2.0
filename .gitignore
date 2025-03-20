@@ -167,6 +167,7 @@ data/
 # Ignore all subdirectories in src/IV_pipelines except vidsGen
 src/IV_pipelines/*
 !src/IV_pipelines/vidsGen/
+!src/IV_pipelines/assetsGen/
 # Add exceptions for other directories as needed with similar pattern:
 # !src/IV_pipelines/other_directory_to_keep/
 

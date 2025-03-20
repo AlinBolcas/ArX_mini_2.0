@@ -495,7 +495,7 @@ if __name__ == "__main__":
             sys.exit(1)
         
         # Creative prompt for all generations
-        creative_prompt = "A generative audiovisual landscape where music waveforms morph into flowing geometric patterns, featuring reactive particle systems that respond to audio frequencies, with layered motion graphics transitioning between organic and digital aesthetics, all rendered in a real-time visual style"
+        creative_prompt = "stylized caiman character, anthropomorphic design, full body, in a studio lighting environment, highly detailed, realistic texturign and shading"
         
         # Image generation and interaction loop
         image_url = None
@@ -1001,4 +1001,4 @@ if __name__ == "__main__":
 
     # Choose which function to run
     # run_interactive_demo()
-    test_video_models() 
+    run_interactive_demo() 

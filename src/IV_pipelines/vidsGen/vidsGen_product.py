@@ -432,34 +432,6 @@ class VidsGenTurntable:
         
         return response
     
-    def _get_fallback_prompt(self, prompt_type: str, selected_option: dict):
-        """Get a reliable fallback prompt"""
-        product_name = selected_option.get('name', 'Product')
-        visual_style = selected_option.get('visual_style', 'modern and sleek')
-        motion_type = selected_option.get('motion_type', 'smooth movement')
-        music_style = selected_option.get('music_style', 'contemporary electronic')
-        
-        fallbacks = {
-            "image": f"Photorealistic product render of {product_name}, {visual_style}, with detailed textures, high-quality materials, reflective surfaces, studio lighting with dramatic rim light accent, professional product photography style, 8k resolution, shallow depth of field focusing on key details, neutral background with subtle gradient",
-            
-            "video": f"Smooth {'360-degree turntable rotation' if self.turntable else 'camera movement'} showing {product_name} from all angles, 6 second duration, starting slowly then maintaining steady pace, cinematic lighting that emphasizes materials and textures, subtle spotlight following the motion to highlight key features, professional product showcase with high production value, clean background with minimal distractions",
-            
-            "music": f"Professional {music_style} background music at 110 BPM, with layered synthesizer elements, subtle rhythmic patterns, gradual dynamic progression building to midpoint then elegantly resolving, modern and professional mood that enhances the visual experience, clean production with spatial depth, perfect for product demonstration",
-            
-            "model": f"Highly detailed 3D model of {product_name}, professional-grade asset with photorealistic materials and textures, {visual_style}, precise geometry with optimized topology, proper scale and proportions, PBR materials with accurate reflections and surface properties, includes high-resolution textures for close-up examination, suitable for product visualization in any 3D environment, ready for AR/VR implementation"
-        }
-        
-        return fallbacks[prompt_type]
-    
-    def _get_fallback_prompts(self, selected_option: dict):
-        """Get all fallback prompts as a dictionary"""
-        return {
-            "image_prompt": self._get_fallback_prompt("image", selected_option),
-            "video_prompt": self._get_fallback_prompt("video", selected_option),
-            "music_prompt": self._get_fallback_prompt("music", selected_option),
-            "model_prompt": self._get_fallback_prompt("model", selected_option)
-        }
-
     def _save_description_as_md(self):
         """Save project description as Markdown"""
         product_dir = self._create_product_dir()
