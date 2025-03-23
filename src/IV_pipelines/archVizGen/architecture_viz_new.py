@@ -3,26 +3,35 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from pathlib import Path
 import json
-from typing import Dict, List, Any, Set, Tuple
+from typing import Dict, List, Any, Set, Optional, Tuple
 import sys
 import re
+import graphviz
+import logging
 
-# Set up project root and add to path
-project_root = Path(__file__).resolve().parent.parent.parent
-sys.path.append(str(project_root))
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Import OpenAI API module
+# Set up project root and add to path properly
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent  # Go up to src directory
+
+# Add src directory to path to enable imports
+sys.path.insert(0, str(project_root.parent))  # Add project root to path
+
+# Import OpenAI API module with correct path
 from src.I_integrations.openai_API import OpenAIAPI
 
 class RepoArchitectureViz:
     def __init__(self, output_dir=None):
-        self.project_root = project_root
+        self.project_root = project_root.parent  # Set to actual project root
         
         # Set up output directory
         if output_dir:
             self.output_dir = Path(output_dir)
         else:
-            self.output_dir = project_root / "data" / "output" / "architecture_viz"
+            self.output_dir = self.project_root / "data" / "output" / "architecture_viz"
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -34,6 +43,24 @@ class RepoArchitectureViz:
         
         # Set dark theme for matplotlib
         plt.style.use('dark_background')
+        
+        # Neural graph inspired color scheme
+        self.base_colors = {
+            'central': '#00BFFF',      # Bright blue for central node
+            'primary': '#3B82F6',      # Medium blue for primary connections
+            'secondary': '#1E3A8A',    # Deep blue for secondary nodes
+            'tertiary': '#6D28D9',     # Purple for tertiary nodes
+            'edge': '#ffffff80',       # Semi-transparent white
+            'edge_primary': '#60A5FA90' # Light blue for primary edges
+        }
+        
+        # Initialize graph state for Graphviz implementation
+        self.nodes: Set[str] = set()
+        self.edges: Set[tuple] = set()
+        self.node_attributes: Dict[str, Dict] = {}
+        
+        # Store module imports for dependency analysis
+        self.module_imports = {}
         
     def analyze_folder_structure(self, ignore_dirs=None) -> Dict[str, Any]:
         """
@@ -48,9 +75,6 @@ class RepoArchitectureViz:
         structure = {}
         file_counts = {}
         file_types = {}
-        
-        # Store module imports for dependency analysis
-        self.module_imports = {}
         
         for root, dirs, files in os.walk(self.project_root):
             # Skip ignored directories
@@ -246,6 +270,190 @@ class RepoArchitectureViz:
             
         return "\n\n---\n\n".join(docs)
 
+    def prepare_graphviz_data(self, components: Dict[str, List[str]], dependencies: Dict[str, Set[str]]):
+        """
+        Prepare graph data for Graphviz visualization using neuron_graph style
+        
+        Args:
+            components: Dictionary mapping component types to component names
+            dependencies: Dependencies between components
+        """
+        # Clear existing graph data
+        self.nodes = set()
+        self.edges = set()
+        self.node_attributes = {}
+        
+        # Add a central "repo" node
+        central_node = "repository"
+        self.nodes.add(central_node)
+        self.node_attributes[central_node] = {
+            'shape': 'circle',
+            'style': 'filled',
+            'fillcolor': self.base_colors['central'],
+            'fontcolor': 'white',
+            'width': '1.2',
+            'height': '1.2',
+            'central': 'true'
+        }
+        
+        # Add component nodes by type
+        for comp_type, comps in components.items():
+            for comp in comps:
+                # Use basename as node name for better readability
+                name = os.path.basename(comp) if '/' in comp else comp
+                self.nodes.add(name)
+                
+                # Set attributes based on component type
+                if comp_type == 'core':
+                    color = self.base_colors['primary']
+                    size = '12'
+                    # Link core components directly to central node
+                    self.edges.add((central_node, name))
+                elif comp_type in ['utility', 'integrations']:
+                    color = self.base_colors['secondary']
+                    size = '10'
+                    # Utility components typically connect to central node
+                    self.edges.add((central_node, name))
+                else:
+                    color = self.base_colors['tertiary']
+                    size = '9'
+                
+                self.node_attributes[name] = {
+                    'fillcolor': color,
+                    'fontsize': size
+                }
+        
+        # Add edges based on dependencies
+        for source, targets in dependencies.items():
+            source_name = os.path.basename(source) if '/' in source else source
+            if source_name in self.nodes:
+                for target in targets:
+                    target_name = os.path.basename(target) if '/' in target else target
+                    if target_name in self.nodes and source_name != target_name:
+                        # Skip if we already have an edge from central to this node
+                        if not ((source_name == central_node and target_name in self.nodes) or 
+                                (target_name == central_node and source_name in self.nodes)):
+                            self.edges.add((source_name, target_name))
+        
+        logger.info(f"Graph prepared with {len(self.nodes)} nodes and {len(self.edges)} edges")
+
+    def create_graphviz_visualization(self, output_path: Optional[Path] = None) -> Optional[str]:
+        """
+        Generate a high-resolution radial visualization of the repository architecture.
+        
+        Args:
+            output_path: Optional custom output path
+            
+        Returns:
+            Path to the generated PNG file
+        """
+        try:
+            if not output_path:
+                output_path = self.output_dir / "repo_architecture_radial"
+            
+            # Create new graph with twopi layout
+            dot = graphviz.Graph(
+                'repo_architecture',
+                comment='Repository Architecture Graph',
+                engine='twopi'
+            )
+
+            # Graph attributes for radial layout
+            dot.attr(
+                layout='twopi',
+                ranksep='2.5',
+                overlap='false',
+                splines='curved',
+                bgcolor='#0A0A0F',
+                fontname='Helvetica,Arial,sans-serif',
+                dpi='300'
+            )
+
+            # Node defaults
+            dot.attr('node',
+                shape='ellipse',
+                style='filled,rounded',
+                fillcolor=self.base_colors['secondary'],
+                fontcolor='white',
+                fontname='Helvetica,Arial,sans-serif',
+                fontsize='11',
+                margin='0.2',
+                penwidth='0',
+                radius='5'
+            )
+
+            # Edge defaults
+            dot.attr('edge',
+                color=self.base_colors['edge'],
+                fontcolor='white',
+                fontname='Helvetica,Arial,sans-serif',
+                fontsize='9',
+                penwidth='1.2',
+                arrowsize='0.6'
+            )
+
+            # Add all nodes
+            for node in self.nodes:
+                attrs = self.node_attributes.get(node, {})
+                # Format node labels for better readability
+                label = node.replace('_', ' ').title()
+                dot.node(node, label, **attrs)
+
+            # Add all edges
+            for source, target in self.edges:
+                is_central_edge = source.lower() == 'repository' or target.lower() == 'repository'
+                dot.edge(source, target,
+                    color=self.base_colors['edge_primary'] if is_central_edge else self.base_colors['edge'],
+                    penwidth=str(1.5 if is_central_edge else 1.0),
+                    weight=str(2 if is_central_edge else 1)
+                )
+
+            # Ensure output directory exists
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Render and save the graph
+            dot.render(str(output_path), format='png', cleanup=True)
+            
+            logger.info(f"Radial visualization saved to: {output_path}.png")
+            return str(output_path) + '.png'
+
+        except Exception as e:
+            logger.error(f"Failed to visualize architecture graph: {e}")
+            return None
+
+    def create_mermaid_visualization(self, mermaid_code: str):
+        """Save Mermaid diagram code to file"""
+        mermaid_path = self.output_dir / "architecture.mmd"
+        mermaid_path.write_text(mermaid_code)
+        print(f"Mermaid diagram saved to: {mermaid_path}")
+        
+        # Also save a clean version with just the mermaid code for rendering
+        clean_code = self.extract_mermaid_code(mermaid_code)
+        if clean_code:
+            clean_path = self.output_dir / "architecture_clean.mmd"
+            clean_path.write_text(clean_code)
+            print(f"Clean Mermaid code saved to: {clean_path}")
+    
+    def extract_mermaid_code(self, text: str) -> str:
+        """Extract mermaid code from text that might contain markdown blocks"""
+        if "```mermaid" in text:
+            try:
+                code = text.split("```mermaid")[1].split("```")[0].strip()
+                return code
+            except IndexError:
+                pass
+        
+        if "```" in text:
+            try:
+                code = text.split("```")[1].strip()
+                if code.startswith("graph ") or code.startswith("flowchart "):
+                    return code
+            except IndexError:
+                pass
+        
+        # If we can't extract it properly, return the original
+        return text
+
     def generate_architecture_description(self, folder_structure: Dict, docs: str, components: Dict[str, List[str]]) -> str:
         """Generate a logical flow diagram of the repository architecture"""
         
@@ -273,10 +481,11 @@ class RepoArchitectureViz:
         1. The diagram MUST use the actual component names specified above, not generic or made-up components.
         2. Show ONLY main components and their relationships, keep it readable (max 15-20 components).
         3. Use colors to distinguish component types:
-           - Blue (#1E90FF) for core components
-           - Green (#32CD32) for utility components
-           - Purple (#800080) for data components
-           - Yellow (#FFD700) for interface and integration components
+           - Blue (#3B82F6) for core components
+           - Indigo (#1E3A8A) for utility components
+           - Purple (#6D28D9) for data components
+           - Light Blue (#60A5FA) for interface components
+           - Cyan (#00BFFF) for integration components
         4. Show logical flow and dependencies between components
         
         Repository Documentation:
@@ -349,282 +558,6 @@ class RepoArchitectureViz:
         
         return clean_code
 
-    def create_mermaid_visualization(self, mermaid_code: str):
-        """Save Mermaid diagram code to file"""
-        mermaid_path = self.output_dir / "architecture.mmd"
-        mermaid_path.write_text(mermaid_code)
-        print(f"Mermaid diagram saved to: {mermaid_path}")
-        
-        # Also save a clean version with just the mermaid code for rendering
-        clean_code = self.extract_mermaid_code(mermaid_code)
-        if clean_code:
-            clean_path = self.output_dir / "architecture_clean.mmd"
-            clean_path.write_text(clean_code)
-            print(f"Clean Mermaid code saved to: {clean_path}")
-    
-    def extract_mermaid_code(self, text: str) -> str:
-        """Extract mermaid code from text that might contain markdown blocks"""
-        if "```mermaid" in text:
-            try:
-                code = text.split("```mermaid")[1].split("```")[0].strip()
-                return code
-            except IndexError:
-                pass
-        
-        if "```" in text:
-            try:
-                code = text.split("```")[1].strip()
-                if code.startswith("graph ") or code.startswith("flowchart "):
-                    return code
-            except IndexError:
-                pass
-        
-        # If we can't extract it properly, return the original
-        return text
-
-    def create_networkx_visualization(self, structure: Dict, components: Dict[str, List[str]], dependencies: Dict[str, Set[str]]):
-        """Create a detailed network visualization of the repository architecture"""
-        G = nx.DiGraph()
-        
-        # Add nodes from identified components
-        node_types = {}
-        
-        for comp_type, comps in components.items():
-            for comp in comps:
-                # Get simplified name for the node (basename of the component path)
-                name = os.path.basename(comp) if '/' in comp else comp
-                G.add_node(name, type=comp_type, fullpath=comp)
-                node_types[name] = comp_type
-        
-        # Add edges based on dependencies
-        for source, targets in dependencies.items():
-            source_name = os.path.basename(source) if '/' in source else source
-            if source_name in G:
-                for target in targets:
-                    target_name = os.path.basename(target) if '/' in target else target
-                    if target_name in G and source_name != target_name:
-                        G.add_edge(source_name, target_name)
-        
-        # Add additional edges based on common patterns if the graph is sparse
-        if len(G.edges()) < len(G.nodes()) / 2:
-            self._add_logical_edges(G, node_types)
-        
-        # Set up layout - use force-directed layout for better visualization
-        pos = nx.spring_layout(G, seed=42, k=0.5)
-        
-        # Set up the plot with dark theme
-        plt.figure(figsize=(16, 10), facecolor='#1a1a1a')
-        ax = plt.gca()
-        ax.set_facecolor('#1a1a1a')
-        
-        # Define node colors by type
-        node_colors = {
-            'core': '#2196F3',      # Blue
-            'utility': '#4CAF50',   # Green
-            'data': '#9C27B0',      # Purple
-            'interface': '#FFC107', # Yellow
-            'integrations': '#FF9800', # Orange
-            'tests': '#F44336'      # Red
-        }
-        
-        # Draw nodes by type
-        for node_type in set(node_types.values()):
-            nodes = [n for n, t in node_types.items() if t == node_type]
-            if nodes:
-                nx.draw_networkx_nodes(G, pos,
-                                     nodelist=nodes,
-                                     node_color=node_colors.get(node_type, '#CCCCCC'),
-                                     node_size=2000,
-                                     alpha=0.9)
-        
-        # Draw edges with curved arrows
-        nx.draw_networkx_edges(G, pos,
-                              edge_color='#404040',
-                              arrows=True,
-                              arrowstyle='-|>',
-                              arrowsize=15,
-                              width=1.5,
-                              alpha=0.7,
-                              connectionstyle='arc3,rad=0.1')
-        
-        # Add labels with better positioning
-        nx.draw_networkx_labels(G, pos,
-                              font_size=9,
-                              font_weight='bold',
-                              font_color='white')
-        
-        # Add a title and a color legend
-        plt.title("Repository Architecture Visualization", color='white', fontsize=16)
-        
-        # Add legend manually
-        legend_elements = []
-        import matplotlib.patches as mpatches
-        
-        # Create legend entries for each component type
-        for comp_type, color in node_colors.items():
-            if any(t == comp_type for t in node_types.values()):
-                legend_elements.append(
-                    mpatches.Patch(facecolor=color, edgecolor='white', alpha=0.7, label=comp_type.capitalize())
-                )
-        
-        # Add legend to plot
-        plt.legend(handles=legend_elements, loc='upper right', frameon=True, framealpha=0.7)
-        
-        # Save the visualization
-        network_path = self.output_dir / 'repo_architecture.png'
-        plt.savefig(
-            network_path,
-            facecolor='#1a1a1a',
-            edgecolor='none',
-            bbox_inches='tight',
-            dpi=300
-        )
-        plt.close()
-        
-        print(f"Network visualization saved to: {network_path}")
-        
-        # Create additional detailed visualization with module details
-        self._create_detailed_visualization(structure, components)
-    
-    def _add_logical_edges(self, G, node_types):
-        """Add logical edges based on common architectural patterns"""
-        node_by_type = {}
-        for node, node_type in node_types.items():
-            if node_type not in node_by_type:
-                node_by_type[node_type] = []
-            node_by_type[node_type].append(node)
-            
-        # Common patterns:
-        # 1. Core components depend on data components
-        if 'core' in node_by_type and 'data' in node_by_type:
-            for core_node in node_by_type['core']:
-                for data_node in node_by_type['data']:
-                    G.add_edge(core_node, data_node)
-        
-        # 2. Interface components depend on core components
-        if 'interface' in node_by_type and 'core' in node_by_type:
-            for interface_node in node_by_type['interface']:
-                for core_node in node_by_type['core']:
-                    G.add_edge(interface_node, core_node)
-        
-        # 3. Integration components connect to core components
-        if 'integrations' in node_by_type and 'core' in node_by_type:
-            for integration_node in node_by_type['integrations']:
-                for core_node in node_by_type['core']:
-                    G.add_edge(integration_node, core_node)
-                    
-    def _create_detailed_visualization(self, structure, components):
-        """Create a more detailed visualization showing module organization"""
-        # Create a new figure
-        plt.figure(figsize=(20, 14), facecolor='#1a1a1a')
-        ax = plt.gca()
-        ax.set_facecolor('#1a1a1a')
-        
-        # Use a treemap-like visualization
-        # First, define areas for different component types
-        areas = [
-            ('core', (0.1, 0.5, 0.35, 0.4)),  # (left, bottom, width, height)
-            ('utility', (0.1, 0.1, 0.35, 0.3)),
-            ('data', (0.55, 0.5, 0.35, 0.4)),
-            ('interface', (0.55, 0.1, 0.2, 0.3)),
-            ('integrations', (0.77, 0.1, 0.13, 0.3)),
-            ('tests', (0.55, 0.05, 0.35, 0.03))
-        ]
-        
-        # Draw component areas
-        for component_type, rect in areas:
-            left, bottom, width, height = rect
-            color = {
-                'core': '#1E4D8C',
-                'utility': '#1C522A',
-                'data': '#461D59',
-                'interface': '#8C6D1F',
-                'integrations': '#8C4A1D',
-                'tests': '#8C1D1D'
-            }.get(component_type, '#333333')
-            
-            rect = plt.Rectangle((left, bottom), width, height, facecolor=color, alpha=0.3, edgecolor='white', linewidth=2)
-            ax.add_patch(rect)
-            
-            # Add area label
-            ax.text(left + width / 2, bottom + height - 0.02, component_type.upper(), 
-                   ha='center', va='top', color='white', fontsize=14, fontweight='bold')
-            
-            # Add components to the area
-            if component_type in components and components[component_type]:
-                comps = components[component_type]
-                num_comps = len(comps)
-                
-                if num_comps > 0:
-                    # Calculate grid dimensions
-                    cols = min(4, num_comps)
-                    rows = (num_comps + cols - 1) // cols
-                    
-                    # Draw components
-                    for i, comp in enumerate(comps):
-                        row = i // cols
-                        col = i % cols
-                        
-                        # Calculate position
-                        comp_width = width / cols
-                        comp_height = (height - 0.07) / rows  # Leave space for area label
-                        
-                        comp_left = left + col * comp_width + 0.01
-                        comp_bottom = bottom + (rows - row - 1) * comp_height + 0.02
-                        
-                        # Draw component box
-                        comp_color = {
-                            'core': '#2196F3',
-                            'utility': '#4CAF50',
-                            'data': '#9C27B0',
-                            'interface': '#FFC107',
-                            'integrations': '#FF9800',
-                            'tests': '#F44336'
-                        }.get(component_type, '#CCCCCC')
-                        
-                        comp_rect = plt.Rectangle(
-                            (comp_left, comp_bottom), 
-                            comp_width - 0.02, 
-                            comp_height - 0.04, 
-                            facecolor=comp_color, 
-                            alpha=0.7,
-                            edgecolor='white', 
-                            linewidth=1
-                        )
-                        ax.add_patch(comp_rect)
-                        
-                        # Get component name (basename)
-                        comp_name = os.path.basename(comp) if '/' in comp else comp
-                        
-                        # Add component label
-                        ax.text(
-                            comp_left + (comp_width - 0.02) / 2, 
-                            comp_bottom + (comp_height - 0.04) / 2, 
-                            comp_name, 
-                            ha='center', 
-                            va='center', 
-                            color='white', 
-                            fontsize=9,
-                            fontweight='bold'
-                        )
-        
-        # Remove axes
-        plt.axis('off')
-        plt.title("Repository Module Organization", color='white', fontsize=18, pad=20)
-        
-        # Save the detailed visualization
-        detailed_path = self.output_dir / 'repo_detailed_architecture.png'
-        plt.savefig(
-            detailed_path,
-            facecolor='#1a1a1a',
-            edgecolor='none',
-            bbox_inches='tight',
-            dpi=300
-        )
-        plt.close()
-        
-        print(f"Detailed visualization saved to: {detailed_path}")
-
     def visualize(self):
         """Main method to generate all visualizations"""
         print("Analyzing repository architecture...")
@@ -642,13 +575,17 @@ class RepoArchitectureViz:
             # 4. Find dependencies between components
             dependencies = self.find_dependencies(components)
             
-            # 5. Generate Mermaid diagram
-            print("\nGenerating architecture diagram...")
-            mermaid_code = self.generate_architecture_description(folder_structure, docs, components)
+            # 5. Generate GraphViz visualization (neuron-graph style)
+            print("\nGenerating radial architecture diagram...")
+            self.prepare_graphviz_data(components, dependencies)
+            graphviz_output = self.create_graphviz_visualization()
+            if graphviz_output:
+                print(f"Radial diagram created at: {graphviz_output}")
             
-            # 6. Create visualizations
+            # 6. Generate Mermaid diagram
+            print("\nGenerating Mermaid architecture diagram...")
+            mermaid_code = self.generate_architecture_description(folder_structure, docs, components)
             self.create_mermaid_visualization(mermaid_code)
-            self.create_networkx_visualization(folder_structure, components, dependencies)
             
             print(f"\nArchitecture visualizations saved to: {self.output_dir}")
             
@@ -658,5 +595,8 @@ class RepoArchitectureViz:
             traceback.print_exc()
 
 if __name__ == "__main__":
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    
     viz = RepoArchitectureViz()
     viz.visualize()

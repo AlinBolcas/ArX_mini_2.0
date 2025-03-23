@@ -198,7 +198,6 @@ def shorten_url(url: str, token: str) -> str:
     return response.json().get("link", "Error shortening URL")
 
 from colorama import Fore, Style, init as colorama_init
-
 # Initialize colorama
 colorama_init(autoreset=True)
 
@@ -221,6 +220,3 @@ def printColoured(text, color_name):
     
     color_code = color_dict.get(color_name.lower(), Style.RESET_ALL)
     return f"{color_code}{text}{Style.RESET_ALL}"
-    
-    
-    

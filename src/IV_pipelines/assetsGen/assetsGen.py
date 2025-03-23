@@ -45,7 +45,7 @@ class AssetsGen:
         openai_api_key: Optional[str] = None,
         replicate_api_key: Optional[str] = None,
         output_dir: str = "assets",
-        llm_model: str = "gpt-4o",
+        llm_model: str = "gpt-4o-mini",
         image_gen_model: str = "flux",
         video_gen_model: str = "wan-i2v-480p",
         turntable: bool = True,
@@ -128,8 +128,8 @@ class AssetsGen:
     
     def _setup_output_dirs(self):
         """Set up output directory structure"""
-        # Base output directory
-        self.output_base_dir = Path("data/output")
+        # Base output directory - FIX: Using absolute path to avoid path duplication
+        self.output_base_dir = Path("data/output").resolve()  # Use resolve to get absolute path
         self.full_output_dir = self.output_base_dir / self.output_dir
         
         # Create base directory if it doesn't exist
@@ -453,13 +453,35 @@ class AssetsGen:
         # Download the image
         product_name = self.state["description"].get("name", "product").replace(" ", "_")
         filename = f"image_{product_name}_{self.project_id}.png"
-        image_path = download_file(
-            url=image_output, 
-            output_dir=str(self.product_dir),
-            filename=filename
-        )
+        
+        # FIX: Ensure we're using the correct absolute path string
+        output_dir_str = str(self.product_dir.resolve())  # Use resolve() to get absolute path
+        
+        # FIX: Add retry logic for downloading
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                image_path = download_file(
+                    url=image_output, 
+                    output_dir=output_dir_str,  # Use the resolved path
+                    filename=filename
+                )
+                if image_path:
+                    break
+                else:
+                    print(f"Download attempt {attempt+1}/{max_retries} failed. Retrying...")
+                    time.sleep(2)  # Add delay between retries
+            except Exception as e:
+                print(f"Download error (attempt {attempt+1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(2)  # Add delay between retries
         
         if image_path:
+            # FIX: Ensure image_path is an absolute path
+            if not os.path.isabs(image_path):
+                image_path = os.path.abspath(image_path)
+            
             print(f"✅ Downloaded product image: {image_path}")
             self.state["image_path"] = image_path
             self.state["image_url"] = original_image_url
@@ -469,7 +491,7 @@ class AssetsGen:
             
             return image_path
         else:
-            print("Failed to download image")
+            print("Failed to download image after multiple attempts")
             return None
     
     def generate_video(self):
@@ -502,28 +524,62 @@ class AssetsGen:
         # Download the video
         product_name = self.state["description"].get("name", "product").replace(" ", "_")
         filename = f"video_{product_name}_{self.project_id}.mp4"
-        video_path = download_file(
-            url=video_url, 
-            output_dir=str(self.product_dir),
-            filename=filename
-        )
+        
+        # FIX: Ensure we're using the correct absolute path string
+        output_dir_str = str(self.product_dir.resolve())
+        
+        # FIX: Add robust retry logic for video download
+        max_retries = 5  # More retries for video which is larger
+        for attempt in range(max_retries):
+            try:
+                video_path = download_file(
+                    url=video_url, 
+                    output_dir=output_dir_str,
+                    filename=filename
+                )
+                if video_path:
+                    break
+                else:
+                    print(f"Video download attempt {attempt+1}/{max_retries} failed. Retrying in {(attempt+1)*2}s...")
+                    time.sleep((attempt+1) * 2)  # Increasing delay between retries
+            except Exception as e:
+                print(f"Video download error (attempt {attempt+1}/{max_retries}): {e}")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep((attempt+1) * 2)  # Increasing delay between retries
         
         if video_path:
+            # FIX: Ensure video_path is an absolute path
+            if not os.path.isabs(video_path):
+                video_path = os.path.abspath(video_path)
+            
             print(f"✅ Downloaded product video: {video_path}")
             
             # Apply looping if enabled
             if self.loop:
                 print("Creating seamless loop...")
                 looped_path = Path(video_path).with_name(f"{Path(video_path).stem}_looped.mp4")
-                if video_loop(str(video_path), str(looped_path)):
-                    video_path = str(looped_path)
-                    print(f"✅ Created looped version: {video_path}")
+                # FIX: Better error handling for looping
+                try:
+                    if video_loop(str(video_path), str(looped_path)):
+                        video_path = str(looped_path)
+                        print(f"✅ Created looped version: {video_path}")
+                    else:
+                        print("Could not create looped version, using original video")
+                except Exception as e:
+                    print(f"Error creating video loop: {e}")
+                    print("Using original video instead")
             
             # Create GIF regardless of looping
-            gif_path = Path(video_path).with_suffix('.gif')
-            if video_to_gif(str(video_path), str(gif_path), fps=15):
-                print(f"✅ Created GIF preview: {gif_path}")
-                self.state["gif_path"] = str(gif_path)
+            try:
+                gif_path = Path(video_path).with_suffix('.gif')
+                if video_to_gif(str(video_path), str(gif_path), fps=15):
+                    print(f"✅ Created GIF preview: {gif_path}")
+                    self.state["gif_path"] = str(gif_path)
+                else:
+                    print("Could not create GIF version")
+            except Exception as e:
+                print(f"Error creating GIF: {e}")
             
             self.state["video_path"] = video_path
             self.state["video_url"] = video_url
@@ -533,7 +589,7 @@ class AssetsGen:
             
             return video_path
         else:
-            print("Failed to download video")
+            print("Failed to download video after multiple attempts")
             return None
     
     def generate_music(self):
@@ -602,32 +658,46 @@ class AssetsGen:
         # Create output path for 3D model
         product_name = self.state["description"].get("name", "product").replace(" ", "_")
         model_filename = f"model_{product_name}_{self.project_id}.glb"
-        model_path = str(self.product_dir / model_filename)
+        model_path = str(self.product_dir.resolve() / model_filename)  # FIX: Use resolve() for absolute path
         
-        # Generate the 3D model using Tripo API
-        generated_model = await self.tripo.generate_threed(
-            prompt=model_prompt,
-            image_path=self.state["image_path"],
-            output_path=model_path,
-            texture_quality="detailed",
-            pbr=True,
-            auto_size=True
-        )
-        
-        if generated_model:
-            print(f"✅ Generated 3D model: {generated_model}")
-            self.state["model_path"] = generated_model
-            
-            # Preview the 3D model
+        # FIX: Add retry logic and better error handling for 3D model generation
+        max_retries = 2
+        for attempt in range(max_retries):
             try:
-                await self.tripo.preview_model(generated_model)
+                # Generate the 3D model using Tripo API
+                generated_model = await self.tripo.generate_threed(
+                    prompt=model_prompt,
+                    image_path=self.state["image_path"],
+                    output_path=model_path,
+                    texture_quality="detailed",
+                    pbr=True,
+                    auto_size=True
+                )
+                
+                if generated_model:
+                    print(f"✅ Generated 3D model: {generated_model}")
+                    self.state["model_path"] = generated_model
+                    
+                    # Preview the 3D model
+                    try:
+                        await self.tripo.preview_model(generated_model)
+                    except Exception as e:
+                        print(f"Note: Could not preview 3D model: {e}")
+                    
+                    return generated_model
+                else:
+                    print(f"Failed to generate 3D model on attempt {attempt+1}/{max_retries}")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in {(attempt+1)*3} seconds...")
+                        time.sleep((attempt+1) * 3)
             except Exception as e:
-                print(f"Note: Could not preview 3D model: {e}")
-            
-            return generated_model
-        else:
-            print("Failed to generate 3D model")
-            return None
+                print(f"Error generating 3D model (attempt {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {(attempt+1)*3} seconds...")
+                    time.sleep((attempt+1) * 3)
+        
+        print("Failed to generate 3D model after multiple attempts")
+        return None
     
     def combine_video_music(self):
         """Combine product video with background music"""

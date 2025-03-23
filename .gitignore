@@ -168,6 +168,15 @@ data/
 src/IV_pipelines/*
 !src/IV_pipelines/vidsGen/
 !src/IV_pipelines/assetsGen/
+!src/IV_pipelines/personaGen/
+!src/IV_pipelines/ollama_help/
+!src/IV_pipelines/blender_gen/
+!src/IV_pipelines/dailies/
+!src/IV_pipelines/bukki/
+!src/IV_pipelines/archVizGen/
+!src/IV_pipelines/factory/
+!src/IV_pipelines/music_analyzer/
+
 # Add exceptions for other directories as needed with similar pattern:
 # !src/IV_pipelines/other_directory_to_keep/
 
