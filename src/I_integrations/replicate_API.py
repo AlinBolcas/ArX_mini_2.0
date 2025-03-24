@@ -105,6 +105,7 @@ class ReplicateAPI:
     def generate_image(
         self,
         prompt: str,
+        model: str = "flux-dev",
         negative_prompt: Optional[str] = None,
         aspect_ratio: str = "3:2",
         output_format: str = "jpg",
@@ -113,10 +114,12 @@ class ReplicateAPI:
         image_prompt_strength: float = 0.1,
     ) -> Optional[str]:
         """
-        Generate image using Flux Pro Ultra model.
+        Generate image using various Replicate models.
         
         Args:
             prompt: Text description of the desired image
+            model: Model to use (default: "flux-dev")
+                Options: "flux-schnell", "flux-pro", "flux-pro-ultra", "flux-dev", "recraft", "imagen-3", "imagen-3-fast"
             negative_prompt: What to avoid (optional)
             aspect_ratio: Image aspect ratio (default: "3:2")
             output_format: Output file format (default: "jpg")
@@ -128,29 +131,66 @@ class ReplicateAPI:
             URL to the generated image or None if generation failed
         """
         try:
+            # Prepare base input data common for most models
             input_data = {
                 "prompt": prompt,
                 "aspect_ratio": aspect_ratio,
                 "output_format": output_format,
-                "raw": raw,
-                "safety_tolerance": safety_tolerance,
-                "image_prompt_strength": image_prompt_strength
             }
             
             # Only add negative_prompt if provided
             if negative_prompt:
                 input_data["negative_prompt"] = negative_prompt
 
-            output = self.run_model(
-                "black-forest-labs/flux-1.1-pro-ultra",
-                input_data=input_data
-            )
+            # Determine which model to use
+            model_path = None
+            version = None
             
-            print(f"Image generated successfully: {prompt[:30]}...")
+            # Flux models family (Black Forest Labs)
+            if model in ["flux-schnell", "flux-pro", "flux-pro-ultra", "flux-dev"]:
+                if model == "flux-schnell":
+                    model_path = "black-forest-labs/flux-schnell"
+                elif model == "flux-pro":
+                    model_path = "black-forest-labs/flux-1.1-pro"
+                elif model == "flux-pro-ultra":
+                    model_path = "black-forest-labs/flux-1.1-pro-ultra"
+                else:  # Default to flux-dev
+                    model_path = "black-forest-labs/flux-dev"
+            
+            # Recraft model
+            elif model == "recraft":
+                model_path = "recraft-ai/recraft-v3"
+                # Add model-specific parameters but keep aspect ratio consistent
+                if "16:9" in aspect_ratio:
+                    input_data["width"] = 1024
+                    input_data["height"] = 576
+                elif "1:1" in aspect_ratio:
+                    input_data["width"] = 1024
+                    input_data["height"] = 1024
+                else:  # Default to 3:2
+                    input_data["width"] = 1024
+                    input_data["height"] = 683
+            
+            # Google Imagen models
+            elif model in ["imagen-3", "imagen-3-fast"]:
+                model_path = "google/imagen-3"
+                if model == "imagen-3-fast":
+                    input_data["scale"] = 7.5  # Set the guidance scale
+                    input_data["steps"] = 30   # Reduced steps for faster generation
+            
+            # Fall back to flux-dev if model not recognized
+            else:
+                print(f"Warning: Unrecognized model '{model}'. Using flux-dev instead.")
+                model_path = "black-forest-labs/flux-dev"
+            
+            print(f"Generating image with {model_path}...")
+            output = self.run_model(model_path, input_data=input_data, version=version)
+            
+            print(f"Image generated successfully with {model}: {prompt[:30]}...")
             return output
             
         except Exception as e:
-            print(f"Error generating image: {e}")
+            print(f"Error generating image with {model}: {e}")
             return None
 
     def generate_video(
@@ -169,7 +209,7 @@ class ReplicateAPI:
             prompt: Text description of the desired video
             model: Model to use (default: "wan-i2v-480p")
                 Options: "wan-i2v-720p", "wan-t2v-720p", "wan-i2v-480p", "wan-t2v-480p", "veo2"
-            image_url: URL of the source image (required for image-to-video models)
+            image_url: URL of the source image or local file path (required for image-to-video models)
             seed: Random seed for reproducibility (optional)
             aspect_ratio: Aspect ratio for text-to-video models (default: "16:9")
             duration: Video duration in seconds for veo2 model (default: 5)
@@ -189,8 +229,18 @@ class ReplicateAPI:
             
             # Process image URL if provided
             if image_url:
+                # Check if it's a file path instead of URL
+                if os.path.exists(image_url):
+                    print("Local file path detected, uploading to Replicate...")
+                    try:
+                        image_url = replicate.upload(open(image_url, "rb"))
+                        print(f"Image uploaded successfully: {image_url}")
+                    except Exception as e:
+                        print(f"Error uploading image: {e}")
+                        if "i2v" in model:
+                            raise ValueError(f"Failed to upload image for {model} model which requires an image.")
                 # Convert FileOutput object to string URL if needed
-                if hasattr(image_url, 'url'):
+                elif hasattr(image_url, 'url'):
                     image_url = image_url.url
                 
                 # Ensure we have a valid URL
@@ -334,671 +384,898 @@ class ReplicateAPI:
             print(f"Error generating music: {e}")
             return None
 
-# Helper functions for downloading and displaying media
-def download_file(url: str, output_dir: Optional[str] = None, filename: Optional[str] = None) -> Optional[str]:
-    """
-    Download a file from a URL to a specific output directory.
-    
-    Args:
-        url: URL of the file to download
-        output_dir: Directory to save the file (defaults to temp directory)
-        filename: Optional filename (generated from timestamp if not provided)
+    def generate_threed(
+        self,
+        image_url: str,
+        model: str = "hunyuan3d",
+        seed: int = 1234,
+        steps: int = 50,
+        guidance_scale: float = 5.5,
+        octree_resolution: int = 256,
+        remove_background: bool = True,
+        texture_size: int = 1024,
+        mesh_simplify: float = 0.9,
+        generate_color: bool = True,
+        generate_normal: bool = True,
+        randomize_seed: bool = False,
+        save_gaussian_ply: bool = False,
+        ss_sampling_steps: int = 38,
+        slat_sampling_steps: int = 12,
+        ss_guidance_strength: float = 7.5,
+        slat_guidance_strength: float = 3
+    ) -> Optional[str]:
+        """
+        Generate 3D model from an image.
         
-    Returns:
-        Path to the downloaded file
-    """
-    try:
-        # Create output directory if provided
-        if output_dir:
-            # Create base output directory in data folder
-            base_dir = Path("data/output")
-            if not base_dir.exists():
-                base_dir.mkdir(parents=True, exist_ok=True)
+        Args:
+            image_url: URL of the source image
+            model: Model to use (default: "hunyuan3d")
+                Options: "hunyuan3d", "trellis"
+            seed: Random seed for reproducibility (default: 1234)
+            steps: Number of inference steps for Hunyuan3D (default: 50)
+            guidance_scale: Guidance scale for Hunyuan3D (default: 5.5)
+            octree_resolution: Resolution of the 3D model for Hunyuan3D (default: 256)
+            remove_background: Whether to remove image background for Hunyuan3D (default: True)
+            
+            # Trellis-specific parameters
+            texture_size: Size of generated textures for Trellis (default: 1024)
+            mesh_simplify: Mesh simplification ratio for Trellis (default: 0.9)
+            generate_color: Whether to generate color textures for Trellis (default: True)
+            generate_normal: Whether to generate normal maps for Trellis (default: True)
+            randomize_seed: Whether to randomize seed for Trellis (default: False)
+            save_gaussian_ply: Whether to save Gaussian PLY file for Trellis (default: False)
+            ss_sampling_steps: Surface sampling steps for Trellis (default: 38)
+            slat_sampling_steps: SLAT sampling steps for Trellis (default: 12)
+            ss_guidance_strength: Surface sampling guidance strength for Trellis (default: 7.5)
+            slat_guidance_strength: SLAT guidance strength for Trellis (default: 3)
+            
+        Returns:
+            URL to the generated 3D model or None if generation failed
+        """
+        try:
+            # Process image URL
+            if hasattr(image_url, 'url'):
+                image_url = image_url.url
+            
+            # Ensure we have a valid URL
+            if not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')):
+                raise ValueError(f"Invalid image URL: {image_url}. Must be a URL string.")
+            
+            # Choose the appropriate model
+            if model.lower() == "hunyuan3d":
+                print(f"Generating 3D model with Hunyuan3D from image: {image_url[:50]}...")
                 
-            # Create specific media directory
-            media_dir = base_dir / output_dir
-            if not media_dir.exists():
-                media_dir.mkdir(parents=True, exist_ok=True)
+                output = self.run_model(
+                    "tencent/hunyuan3d-2",
+                    input_data={
+                        "seed": seed,
+                        "image": image_url,
+                        "steps": steps,
+                        "guidance_scale": guidance_scale,
+                        "octree_resolution": octree_resolution,
+                        "remove_background": remove_background
+                    },
+                    version="b1b9449a1277e10402781c5d41eb30c0a0683504fb23fab591ca9dfc2aabe1cb"
+                )
                 
-            # Generate filename if not provided
-            if not filename:
-                extension = url.split('.')[-1] if '.' in url.split('/')[-1] else 'tmp'
-                timestamp = time.strftime("%Y%m%d-%H%M%S")
-                filename = f"{output_dir}_{timestamp}.{extension}"
+                # Handle the specific output format for Hunyuan3D model
+                if isinstance(output, dict) and 'mesh' in output:
+                    if hasattr(output['mesh'], 'url'):
+                        # Extract URL from FileOutput object
+                        return output['mesh'].url
+                    else:
+                        # Try to get the URL as a string if it's directly available
+                        return output['mesh']
                 
-            output_path = media_dir / filename
-        else:
-            # Use temp directory if no output directory specified
-            extension = url.split('.')[-1] if '.' in url.split('/')[-1] else 'tmp'
-            fd, output_path = tempfile.mkstemp(suffix=f'.{extension}')
-            os.close(fd)
-            output_path = Path(output_path)
-        
-        # Download the file
-        print(f"Downloading to {output_path}...")
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        with open(output_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+            elif model.lower() == "trellis":
+                print(f"Generating 3D model with Trellis from image: {image_url[:50]}...")
                 
-        print(f"Downloaded successfully ({os.path.getsize(output_path) / 1024:.1f} KB)")
-        return str(output_path)
-        
-    except Exception as e:
-        print(f"Error downloading file: {e}")
-        return None
+                # Prepare images as a list even if only one image is provided
+                images = [image_url]
+                
+                output = self.run_model(
+                    "firtoz/trellis",
+                    input_data={
+                        "seed": seed if not randomize_seed else 0,
+                        "images": images,
+                        "texture_size": texture_size,
+                        "mesh_simplify": mesh_simplify,
+                        "generate_color": generate_color,
+                        "generate_model": True,
+                        "randomize_seed": randomize_seed,
+                        "generate_normal": generate_normal,
+                        "save_gaussian_ply": save_gaussian_ply,
+                        "ss_sampling_steps": ss_sampling_steps,
+                        "slat_sampling_steps": slat_sampling_steps,
+                        "return_no_background": remove_background,
+                        "ss_guidance_strength": ss_guidance_strength,
+                        "slat_guidance_strength": slat_guidance_strength
+                    },
+                    version="4876f2a8da1c544772dffa32e8889da4a1bab3a1f5c1937bfcfccb99ae347251"
+                )
+                
+                print("Trellis 3D model generated successfully")
+                
+                # Extract URL from Trellis output - Handle the FileOutput object correctly
+                if output and isinstance(output, dict):
+                    if "model_file" in output:
+                        # Extract URL from FileOutput object if necessary
+                        if hasattr(output["model_file"], "url"):
+                            return output["model_file"].url
+                        else:
+                            return output["model_file"]
+                
+                # If we have a direct link to the mesh (non-dictionary output)
+                if isinstance(output, str) and output.endswith((".glb", ".obj", ".fbx")):
+                    return output
+                
+                print(f"Warning: Unexpected output format from Trellis: {type(output)}")
+                # Return the raw output as a last resort - will need to be handled by the caller
+                return output
+                
+            else:
+                raise ValueError(f"Unsupported 3D model: {model}. Choose from: hunyuan3d, trellis")
+            
+            # Fallback to direct output if not in the expected format
+            return output
+            
+        except Exception as e:
+            print(f"Error generating 3D model: {type(e).__name__}: {e}")
+            return None
 
-def display_media(file_path: str, media_type: str = "image"):
-    """Display media using appropriate system tools."""
-    try:
-        if not os.path.exists(file_path):
-            print(f"File not found: {file_path}")
-            return False
+    def download_file(self, url: str, output_dir: Optional[str] = None, filename: Optional[str] = None) -> Optional[str]:
+        """
+        Download a file from a URL to a specific output directory.
+        
+        Args:
+            url: URL of the file to download
+            output_dir: Directory to save the file (defaults to temp directory)
+            filename: Optional filename (generated from timestamp if not provided)
             
-        if sys.platform == "darwin":  # macOS
-            if media_type == "image":
-                # Try QuickLook first
-                print("Opening image with QuickLook...")
-                subprocess.run(["qlmanage", "-p", file_path], 
-                              stdout=subprocess.DEVNULL, 
-                              stderr=subprocess.DEVNULL)
-            elif media_type == "video":
-                # For videos, use QuickTime Player instead of QuickLook for better playback
-                print("Opening video with QuickTime Player...")
-                subprocess.run(["open", "-a", "QuickTime Player", file_path])
-            elif media_type == "audio":
-                # Use afplay for audio
-                print("Playing audio...")
-                subprocess.run(["afplay", file_path])
+        Returns:
+            Path to the downloaded file
+        """
+        try:
+            # Handle dictionary output from Trellis
+            if isinstance(url, dict):
+                print(f"Received dictionary output: {url}")
+                # Try to find a model file or any other usable URL in the dictionary
+                model_file = None
                 
-        elif sys.platform == "win32":  # Windows
-            # Use the default application
-            os.startfile(file_path)
+                # Check for model_file first
+                if 'model_file' in url:
+                    model_file = url['model_file']
+                    if hasattr(model_file, 'url'):
+                        url = model_file.url
+                    else:
+                        url = model_file
+                # Otherwise, try to find any key with a FileOutput object that has a URL
+                else:
+                    for key, value in url.items():
+                        if hasattr(value, 'url'):
+                            url = value.url
+                            print(f"Found URL in '{key}' key: {url}")
+                            break
+                    else:
+                        raise ValueError(f"No valid URL found in dictionary: {url}")
+                
+            # Create output directory if provided
+            if output_dir:
+                # Create base output directory in data folder
+                base_dir = Path("data/output")
+                if not base_dir.exists():
+                    base_dir.mkdir(parents=True, exist_ok=True)
+                    
+                # Create specific media directory
+                media_dir = base_dir / output_dir
+                if not media_dir.exists():
+                    media_dir.mkdir(parents=True, exist_ok=True)
+                    
+                # Generate filename if not provided
+                if not filename:
+                    extension = url.split('.')[-1] if '.' in url.split('/')[-1] else 'tmp'
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    filename = f"{output_dir}_{timestamp}.{extension}"
+                    
+                output_path = media_dir / filename
+            else:
+                # Use temp directory if no output directory specified
+                extension = url.split('.')[-1] if '.' in url.split('/')[-1] else 'tmp'
+                fd, output_path = tempfile.mkstemp(suffix=f'.{extension}')
+                os.close(fd)
+                output_path = Path(output_path)
             
-        else:  # Linux
-            try:
-                subprocess.run(["xdg-open", file_path])
-            except:
-                print(f"Could not open file: {file_path}")
+            # Download the file
+            print(f"Downloading to {output_path}...")
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    
+            print(f"Downloaded successfully ({os.path.getsize(output_path) / 1024:.1f} KB)")
+            return str(output_path)
+            
+        except Exception as e:
+            print(f"Error downloading file: {e}")
+            return None
+
+    def display_media(self, file_path: str, media_type: str = "image"):
+        """Display media using appropriate system tools."""
+        try:
+            if not os.path.exists(file_path):
+                print(f"File not found: {file_path}")
                 return False
                 
-        return True
+            if sys.platform == "darwin":  # macOS
+                if media_type == "image":
+                    # Try QuickLook first
+                    print("Opening image with QuickLook...")
+                    subprocess.run(["qlmanage", "-p", file_path], 
+                                stdout=subprocess.DEVNULL, 
+                                stderr=subprocess.DEVNULL)
+                elif media_type == "video":
+                    # For videos, use QuickTime Player instead of QuickLook for better playback
+                    print("Opening video with QuickTime Player...")
+                    subprocess.run(["open", "-a", "QuickTime Player", file_path])
+                elif media_type == "audio":
+                    # Use afplay for audio
+                    print("Playing audio...")
+                    subprocess.run(["afplay", file_path])
+                elif media_type == "model" or media_type == "3d":
+                    # Open 3D model with default application
+                    print("Opening 3D model with default viewer...")
+                    subprocess.run(["open", file_path])
+                    
+            elif sys.platform == "win32":  # Windows
+                # Use the default application
+                os.startfile(file_path)
+                
+            else:  # Linux
+                try:
+                    subprocess.run(["xdg-open", file_path])
+                except:
+                    print(f"Could not open file: {file_path}")
+                    return False
+                    
+            return True
         
-    except Exception as e:
-        print(f"Error displaying media: {e}")
-        return False
+        except Exception as e:
+            print(f"Error displaying media: {e}")
+            return False
 
-def merge_video_audio(video_path: str, audio_path: str, filename: Optional[str] = None) -> Optional[str]:
-    """Merge video and audio into a single file using ffmpeg."""
-    try:
-        # Create output directory in data folder
-        output_dir = Path("data/output/videos")
-        if not output_dir.exists():
-            output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate output filename if not provided
-        if not filename:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            filename = f"merged_{timestamp}.mp4"
-            
-        output_path = output_dir / filename
-        
-        print(f"Merging video and audio to {output_path}...")
-        
-        # Use ffmpeg to merge video and audio
-        ffmpeg_cmd = [
-            "ffmpeg", "-y",  # Overwrite output file if exists
-            "-i", video_path,  # Video input
-            "-i", audio_path,  # Audio input
-            "-map", "0:v",  # Use video from first input
-            "-map", "1:a",  # Use audio from second input
-            "-c:v", "copy",  # Copy video codec
-            "-shortest",  # Make output duration same as shortest input
-            str(output_path)
-        ]
-        
-        # Check if ffmpeg is available
+    def merge_video_audio(self, video_path: str, audio_path: str, filename: Optional[str] = None) -> Optional[str]:
+        """Merge video and audio into a single file using ffmpeg."""
         try:
-            subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        except (subprocess.SubprocessError, FileNotFoundError):
-            print("Error: ffmpeg not found. Please install ffmpeg to merge video and audio.")
-            return None
+            # Create output directory in data folder
+            output_dir = Path("data/output/videos")
+            if not output_dir.exists():
+                output_dir.mkdir(parents=True, exist_ok=True)
             
-        # Run ffmpeg command
-        process = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        
-        if process.returncode != 0:
-            print(f"Error merging files: {process.stderr.decode()}")
-            return None
+            # Generate output filename if not provided
+            if not filename:
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                filename = f"merged_{timestamp}.mp4"
+                
+            output_path = output_dir / filename
             
-        print(f"Successfully merged video and audio to {output_path}")
-        return str(output_path)
-        
-    except Exception as e:
-        print(f"Error merging video and audio: {e}")
-        return None
+            print(f"Merging video and audio to {output_path}...")
+            
+            # Use ffmpeg to merge video and audio
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",  # Overwrite output file if exists
+                "-i", video_path,  # Video input
+                "-i", audio_path,  # Audio input
+                "-map", "0:v",  # Use video from first input
+                "-map", "1:a",  # Use audio from second input
+                "-c:v", "copy",  # Copy video codec
+                "-shortest",  # Make output duration same as shortest input
+                str(output_path)
+            ]
+            
+            # Check if ffmpeg is available
+            try:
+                subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            except (subprocess.SubprocessError, FileNotFoundError):
+                print("Error: ffmpeg not found. Please install ffmpeg to merge video and audio.")
+                return None
+                
+            # Run ffmpeg command
+            process = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            if process.returncode != 0:
+                print(f"Error merging files: {process.stderr.decode()}")
+                return None
+                
+            print(f"Successfully merged video and audio to {output_path}")
+            return str(output_path)
+            
+        except Exception as e:
+            print(f"Error merging video and audio: {e}")
+            return None
 
 # Entry point
 if __name__ == "__main__":
-    # Interactive demo with parallel processing
-    def run_interactive_demo():
-        print("\n==== REPLICATE API INTERACTIVE DEMO ====\n")
+    def run_test():
+        print("\n===== REPLICATE API TEST =====")
+        print("Testing different media generation capabilities with predefined prompts.")
         
         # Initialize API
         try:
             api = ReplicateAPI()
         except ValueError as e:
             print(f"Error: {e}")
-            print("Make sure to set the REPLICATE_API_TOKEN environment variable.")
+            print("Make sure to set the REPLICATE_API_TOKEN in your .env file.")
             sys.exit(1)
         
-        # Creative prompt for all generations
-        creative_prompt = "stylized caiman character, anthropomorphic design, full body, in a studio lighting environment, highly detailed, realistic texturign and shading"
+        # Image models to test
+        image_models = [
+            "flux-schnell", 
+            "flux-pro", 
+            "flux-pro-ultra", 
+            "flux-dev", 
+            "recraft", 
+            "imagen-3",
+            "imagen-3-fast"
+        ]
         
-        # Image generation and interaction loop
-        image_url = None
-        image_path = None
-        retry_image = True
+        # Display available image models and let the user choose
+        print("\nAvailable image models:")
+        for i, model in enumerate(image_models):
+            print(f"{i+1}. {model}")
         
-        while retry_image:
-            # 1. Generate Image
-            print("\n=== Generating Image ===")
-            image_url = api.generate_image(
-                prompt=creative_prompt,
-                aspect_ratio="1:1",  # Square aspect ratio
-                safety_tolerance=6    # Maximum allowed is 6
-            )
-            
-            if not image_url:
-                print("Image generation failed.")
-                choice = input("\nDo you want to retry? (y/n): ").lower()
-                if choice != 'y':
-                    print("Exiting demo.")
-                    return
-                continue
-            
-            print(f"Image URL: {image_url}")
-            
-            # Download and display image
-            image_path = download_file(image_url, output_dir="images", filename="demo_image.jpg")
-            if image_path:
-                display_media(image_path, "image")
-                
-                # Ask user for next action
-                print("\nOptions:")
-                print("1. Exit demo")
-                print("2. Retry image generation")
-                print("3. Proceed with video generation from this image")
-                
-                choice = input("Enter your choice (1-3): ")
-                
-                if choice == '1':
-                    print("Exiting demo.")
-                    return
-                elif choice == '2':
-                    print("\nRetrying image generation...")
-                    # This is inside a while loop, so continue is valid
-                    continue
-                else:
-                    # User chose to proceed with this image
-                    retry_image = False
-            else:
-                print("Failed to download and display image.")
-                choice = input("\nDo you want to retry? (y/n): ").lower()
-                if choice != 'y':
-                    print("Exiting demo.")
-                    return
+        # Get model selection from user
+        model_selection = input("\nChoose image models to test (comma-separated numbers or 'all'): ").strip().lower()
         
-        # At this point, we have a good image and we'll proceed with parallel video/music generation
-        if image_url and image_path:
-            print("\n=== Starting Parallel Generation ===")
-            video_prompt = f"Camera slowly panning around {creative_prompt}, revealing more of the landscape"
-            music_prompt = f"Epic orchestral soundtrack with magical elements for {creative_prompt}"
+        # Parse the selection
+        selected_models = []
+        if model_selection == 'all':
+            selected_models = image_models
+        else:
+            try:
+                # Split by comma and convert to integers
+                indices = [int(idx.strip()) - 1 for idx in model_selection.split(',')]
+                # Filter valid indices and get corresponding models
+                selected_models = [image_models[idx] for idx in indices if 0 <= idx < len(image_models)]
+                
+                if not selected_models:
+                    print("No valid models selected. Using flux-dev as default.")
+                    selected_models = ["flux-dev"]
+            except ValueError:
+                print("Invalid selection. Using flux-dev as default.")
+                selected_models = ["flux-dev"]
+        
+        print(f"\nSelected image models: {', '.join(selected_models)}")
+        
+        # Predefined prompts for testing
+        test_prompts = {
+            # Previous test prompts (commented out)
+            # "image": "Photorealistic exterior view of a futuristic Geode habitat in San Francisco, geodesic glass sphere with hexagonal panels, three distinct internal levels visible through transparent exterior, integrated bioluminescent AI technology embedded in framework, sustainable self-sufficient ecosystem, advanced sustainable materials, crisp morning light creating lens flares through structure, architectural visualization, 8K resolution, ultra-detailed",
             
-            # Create variables for results
-            video_url = None
-            music_url = None
-            video_path = None
-            music_path = None
+            # "video": "Cinematic aerial shot slowly orbiting around a futuristic Geode habitat structure in San Francisco, transparent geodesic sphere with hexagonal glass panels, blue energy circuits pulsing through framework, three distinct internal levels visible, lush internal gardens, advanced AI systems monitoring environmental controls, morning sunlight glinting off surface, camera smoothly orbiting the structure, photorealistic rendering, epic scale",
             
-            # Define worker functions for concurrent execution
-            def generate_video_worker():
-                print("\n🎬 Generating Video...")
-                # Define variables as local to this function instead of nonlocal
-                # Make sure we're using the URL string
-                if hasattr(image_url, 'url'):
-                    image_url_str = image_url.url
-                else:
-                    image_url_str = str(image_url)
-                    
-                # Generate video
-                generated_video_url = api.generate_video(
-                    prompt=video_prompt,
-                    model="wan-i2v-720p",
-                    image_url=image_url_str
+            # "music": "Futuristic ambient electronic soundscape with hopeful undertones, gentle synthesizer arpeggios representing flowing energy systems within the Geode habitat, subtle orchestral elements conveying grandeur of architectural innovation, medium tempo evolving composition, evokes feelings of technological harmony with nature, soaring sections suggesting vast open interior spaces of the geodesic structure"
+            
+            # Caiman character prompts (commented out)
+            # "image": "Realistic caiman, stylized character with realistic proportions, appealing design, vibrant green color, created by Disney, full-body depiction standing on two legs in a neutral A-pose, VFX turntable setup, studio lighting environment, highly detailed with realistic texturing and shading, cinematic quality, 8K resolution",
+            
+            # "video": "VFX turntable video of a realistic caiman character, stylized with realistic proportions, appealing design, vibrant green, created by Disney, full-body standing on two legs in a neutral A-pose, studio lighting environment, highly detailed with realistic texturing and shading, smooth camera rotation around the character, cinematic quality, 8K resolution",
+            
+            # "music": "Orchestral soundtrack with whimsical undertones, representing the playful nature of a Disney-styled caiman character, gentle woodwind melodies with vibrant string sections, medium tempo evolving composition, evokes feelings of adventure and charm, suitable for a character introduction scene, cinematic quality, inspired by classic Disney scores"
+            
+            # Mongolian-inspired 3D printable gift prompts
+            "image": "Abstract sculptural desk piece inspired by Mongolian culture, featuring elegant flowing lines and a harmonious design, incorporating traditional motifs and symbols, polished stone base with turquoise and coral accents, number 100 subtly incorporated into base pattern, mixed media approach with wood-like and metal textures, elegant 8-inch tall composition suitable for desk display, dramatic lighting highlighting curved contours, product photography with shallow depth of field, ultra-detailed for high-resolution 3D printing",
+            
+            "video": "Cinematic product showcase of a Mongolian-inspired desk sculpture, camera slowly orbiting to reveal the harmonious design and traditional motifs, focus pulls highlighting intricate details and craftsmanship, close-up shots of turquoise and coral accents embedded in polished stone base, reveal of subtle 100-day symbolism integrated into design pattern, gentle rotation showing how light interacts with mixed wood and metallic surfaces, transitions demonstrating how different viewing angles reveal different aspects of the design, warm directional lighting creating dramatic shadows, 8K resolution with realistic material rendering",
+            
+            "music": "Romantic composition featuring traditional Mongolian instruments with modern accompaniment, capturing the essence of Mongolian culture through a harmonious melody, subtle textures creating depth, medium-slow tempo with gentle rhythm suggesting heartbeats, emotional progression from tender beginning to passionate middle section symbolizing 100 days together, traditional Mongolian scales with modern harmonic structure, warm reverb creating spatial dimension, culminating in intertwining melodic lines representing two lives coming together"
+            
+            # Sonic the Hedgehog character asset prompts (full body version)
+            # "image": "Realistic Sonic the Hedgehog, stylized character with realistic proportions, appealing design, vibrant blue fur with detailed quills, full-body depiction standing in a neutral A-pose, VFX turntable setup, studio lighting environment, highly detailed with realistic texturing and shading, red sneakers with white strap, white gloves, emerald green eyes, cinematic quality, 8K resolution",
+            
+            # "video": "VFX turntable video of a realistic Sonic the Hedgehog character, stylized with realistic proportions, appealing design, vibrant blue fur with detailed quills, full-body standing in a neutral A-pose, studio lighting environment, highly detailed with realistic texturing and shading, smooth camera rotation around the character, red sneakers with white strap, white gloves, emerald green eyes, cinematic quality, 8K resolution",
+            
+            # "music": "Fast-paced orchestral soundtrack with electronic elements, representing the speedy nature of Sonic the Hedgehog, energetic brass and string sections with modern synthesizer accents, upbeat tempo with driving rhythm, evokes feelings of adventure and excitement, suitable for a character introduction scene, cinematic quality, inspired by classic Sonic game soundtracks with modern production"
+            
+            # Sonic the Hedgehog facial expression test prompts
+            # "image": "Photorealistic mid-shot of Sonic the Hedgehog in 3/4 view showing upper torso and head, stylized character with realistic blue fur texturing, detailed quills framing his face, expressive emerald green eyes with depth and personality, slight smirk showing characteristic confidence, sharp detailed features with subsurface scattering on skin and fur, studio lighting with rim light highlighting blue fur edges, cinematic color grading, ultra-high resolution, 8K detail, inspired by modern VFX character design",
+            
+            # "video": "Rapid facial expression test of Sonic the Hedgehog's bust in a fixed 3/4 view, quick transitions between diverse expressions including smirk, surprise, anger, joy, determination, confusion, fear, disgust, contempt, and excitement, realistic blue fur with physics simulation, detailed eye movements and brow articulation showing full emotional range, completely stationary camera, studio three-point lighting emphasizing facial contours, rapid-fire expression changes with no dialogue or mouth movement for speech, photorealistic texturing with subsurface scattering, 4K resolution with cinematic depth of field",
+            
+            # "music": "Relaxing ambient soundtrack with subtle nostalgic Sonic game motifs, gentle synthesizer pads and soft piano melodies, slow tempo at 80 BPM creating a calming atmosphere, familiar Sonic themes reimagined in a soothing arrangement, minimal percussion with occasional soft bell tones, warm major key progression maintaining a peaceful mood throughout, inspired by classic Sonic soundtracks but transformed into a meditative listening experience with modern production techniques"
+            
+            # Modern Sonic the Hedgehog VFX prompts
+            # "image": "Photorealistic Sonic the Hedgehog, full body shot, stylized proportions with longer limbs, fashionable longer quills with subtle blue highlights, modern streetwear outfit with casual jeans and stylish jacket, characteristic red sneakers with custom details, white gloves with fingerless design, emerald green eyes with confident expression, friendly smirk showing personality, VFX turntable setup with dramatic lighting, highly detailed fur simulation with realistic texturing, cinematic quality with depth of field, 8K resolution, modern VFX character design",
+            
+            # "video": "VFX turntable video of Sonic the Hedgehog, full body 360-degree rotation, stylized proportions with dynamic features, longer styled quills with subtle blue variations, modern streetwear with jacket and casual jeans, customized red sneakers, fingerless gloves, characteristic confident posture, studio lighting with dramatic rim lights highlighting fur edges, ultra-realistic fur and cloth physics, slow smooth camera rotation capturing all details, cinematic color grading, 8K resolution with shallow depth of field focusing on changing expressions showing range of emotions",
+            
+            # "music": "Dynamic energetic soundtrack blending classic Sonic themes with modern electronic elements, electric guitar riffs with synthesizer accents, medium-fast tempo with driving drum beats, energetic verses with emotional chorus sections, musical progression from playful to heroic, subtle nostalgic Sonic game motifs reimagined with contemporary production, perfect for capturing the spirit of Sonic in his adventures"
+            
+        }
+        
+        # Storage for generated media
+        generated = {
+            "images": {},
+            "video": None,
+            "music": None,
+            "merged": None
+        }
+        
+        # Function to generate an image with a specific model
+        def generate_image_worker(model_name):
+            print(f"\n🖼️ Generating image with model: {model_name}")
+            try:
+                image_url = api.generate_image(
+                    prompt=test_prompts["image"],
+                    model=model_name,
+                    aspect_ratio="16:9",
+                    safety_tolerance=6
                 )
                 
-                if generated_video_url:
-                    print(f"Video generation complete: {generated_video_url}")
-                    # Download video
-                    generated_video_path = download_file(
-                        generated_video_url, 
-                        output_dir="videos", 
-                        filename="demo_video.mp4"
+                if image_url:
+                    print(f"✅ Image generated successfully with {model_name}")
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    image_path = api.download_file(
+                        image_url, 
+                        output_dir="test_images", 
+                        filename=f"test_{model_name}_{timestamp}.jpg"
                     )
-                    return generated_video_url, generated_video_path, True
-                else:
-                    print("Video generation failed.")
-                    return None, None, False
-            
-            def generate_music_worker():
-                print("\n🎵 Generating Music...")
-                # Define variables as local to this function instead of nonlocal
-                
-                # Generate music
-                generated_music_url = api.generate_music(
-                    prompt=music_prompt,
-                    duration=5,  # Short duration to match video
-                    model_version="stereo-large"
-                )
-                
-                if generated_music_url:
-                    print(f"Music generation complete: {generated_music_url}")
-                    # Download music
-                    generated_music_path = download_file(
-                        generated_music_url, 
-                        output_dir="music", 
-                        filename="demo_music.mp3"
-                    )
-                    return generated_music_url, generated_music_path, True
-                else:
-                    print("Music generation failed.")
-                    return None, None, False
-            
-            # Use concurrent futures to run tasks in parallel
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                # Submit tasks
-                video_future = executor.submit(generate_video_worker)
-                music_future = executor.submit(generate_music_worker)
-                
-                # Display progress
-                print("Waiting for generation tasks to complete...")
-                pending = {video_future, music_future}
-                done = set()
-                start_time = time.time()
-                last_update_time = 0  # Track when we last printed an update
-                
-                while pending:
-                    # Poll for completion less frequently (every 2 seconds)
-                    just_done, pending = concurrent.futures.wait(
-                        pending, 
-                        timeout=2.0,  # Increased from 0.5 to 2.0 seconds
-                        return_when=concurrent.futures.FIRST_COMPLETED
-                    )
-                    done |= just_done
                     
-                    # Only print updates every 2+ seconds
-                    current_time = time.time()
-                    if current_time - last_update_time >= 2.0 or just_done:
-                        elapsed = current_time - start_time
-                        print(f"⏳ Waiting for tasks... ({len(done)}/{len(done) + len(pending)} complete, {elapsed:.1f}s elapsed)")
-                        last_update_time = current_time
-            
-            print("\n=== Generation Tasks Complete ===")
-            
-            # Get the results
-            video_result = video_future.result()
-            music_result = music_future.result()
-            
-            if video_result and len(video_result) == 3:
-                video_url, video_path, video_success = video_result
-            else:
-                video_url, video_path, video_success = None, None, False
-                
-            if music_result and len(music_result) == 3:
-                music_url, music_path, music_success = music_result
-            else:
-                music_url, music_path, music_success = None, None, False
-            
-            if video_success and music_success and video_path and music_path:
-                print("\n=== Merging Video and Audio ===")
-                merged_path = merge_video_audio(video_path, music_path, filename="demo_merged.mp4")
-                
-                if merged_path:
-                    print("\n=== Playing Merged Video with Audio ===")
-                    display_media(merged_path, "video")
+                    return {
+                        "model": model_name,
+                        "url": image_url,
+                        "path": image_path,
+                        "success": image_path is not None
+                    }
                 else:
-                    # If merging failed, play them separately
-                    print("\n=== Playing Video and Audio Separately ===")
-                    display_media(video_path, "video")
-                    time.sleep(1)  # Give a second to start the video
-                    display_media(music_path, "audio")
-            else:
-                # Play what we have
-                if video_success and video_path:
-                    print("\n=== Playing Video (without audio) ===")
-                    display_media(video_path, "video")
-                    
-                if music_success and music_path:
-                    print("\n=== Playing Audio (without video) ===")
-                    display_media(music_path, "audio")
+                    print(f"❌ Image generation failed with {model_name}")
+            except Exception as e:
+                print(f"❌ Error with {model_name}: {str(e)}")
+            
+            return {
+                "model": model_name,
+                "url": None,
+                "path": None,
+                "success": False
+            }
         
-        print("\n==== DEMO COMPLETE ====")
-
-    # Test function for video generation models
-    def test_video_models():
-        print("\n==== REPLICATE API VIDEO MODELS TEST ====\n")
+        # 1. Generate images with selected models in parallel
+        image_results = []
+        successful_images = []
         
-        # Initialize API
-        try:
-            api = ReplicateAPI()
-        except ValueError as e:
-            print(f"Error: {e}")
-            print("Make sure to set the REPLICATE_API_TOKEN environment variable.")
-            sys.exit(1)
+        print("\n===== GENERATING IMAGES WITH SELECTED MODELS =====")
+        print(f"Testing {len(selected_models)} image models in parallel with prompt: '{test_prompts['image'][:50]}...'")
         
-        # Image generation and interaction loop
-        image_url = None
-        image_path = None
-        creative_prompt = None
-        retry_image = True
-        
-        while retry_image:
-            # Get creative prompt from user or use default
-            print("\n=== Image Generation ===")
-            default_prompt = "A full 360-degree turntable video of a futuristic neural interface ring projecting vibrant holographic characters, placed on a minimalist white pedestal in a high-tech studio with soft ambient lighting and subtle reflections, showing all details of the product"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(selected_models), 4)) as executor:
+            # Submit tasks (limit to 4 concurrent to avoid rate limiting)
+            futures = {executor.submit(generate_image_worker, model): model for model in selected_models}
             
-            use_default = input(f"Use default prompt? (y/n): ").lower()
-            if use_default == 'n':
-                creative_prompt = input("Enter your custom prompt: ")
-                if not creative_prompt.strip():
-                    creative_prompt = default_prompt
-                    print(f"Using default prompt as fallback.")
-            else:
-                creative_prompt = default_prompt
-                
-            print(f"\nUsing prompt: '{creative_prompt}'")
-            
-            # Generate Image
-            print("\n=== Generating Base Image ===")
-            image_url = api.generate_image(
-                prompt=creative_prompt,
-                aspect_ratio="16:9",  # Widescreen for better video
-                safety_tolerance=6    # Maximum allowed is 6
-            )
-            
-            if not image_url:
-                print("Image generation failed.")
-                choice = input("\nDo you want to retry? (y/n): ").lower()
-                if choice != 'y':
-                    print("Exiting test.")
-                    return
-                continue
-                
-            print(f"Image URL: {image_url}")
-            
-            # Download and display image
-            image_path = download_file(image_url, output_dir="test_images", filename="test_base_image.jpg")
-            if image_path:
-                # Make sure to display the image
-                display_success = display_media(image_path, "image")
-                if display_success:
-                    print("\n=== Base Image Generated Successfully ===")
-                else:
-                    print("\nNote: Could not display the image, but it was generated and saved successfully.")
-                
-                # Ask user for next action
-                print("\nOptions:")
-                print("1. Exit test")
-                print("2. Regenerate image with same prompt")
-                print("3. Regenerate image with new prompt")
-                print("4. Proceed with video generation using this image")
-                
-                choice = input("Enter your choice (1-4): ")
-                
-                if choice == '1':
-                    print("Exiting test.")
-                    return
-                elif choice == '2':
-                    print("\nRegenerating image with same prompt...")
-                    continue
-                elif choice == '3':
-                    print("\nRegenerating image with new prompt...")
-                    continue
-                else:
-                    # User chose to proceed with this image
-                    retry_image = False
-            else:
-                print("Failed to download and display image.")
-                choice = input("\nDo you want to retry? (y/n): ").lower()
-                if choice != 'y':
-                    print("Exiting test.")
-                    return
-        
-        # At this point, we have a good image and prompt, and we'll proceed with video generation
-        # We'll keep using the same image_url, image_path, and creative_prompt for all models
-        
-        # Function to test models - this will be called repeatedly if user wants to test multiple models
-        def test_selected_models(stored_image_url=image_url, stored_prompt=creative_prompt):
-            # List of models to test
-            models_to_test = [
-                # Image-to-video models (require image_url)
-                {"name": "wan-i2v-720p", "requires_image": True, "display_name": "WAN I2V 720p"},
-                {"name": "wan-i2v-480p", "requires_image": True, "display_name": "WAN I2V 480p"},
-                # Text-to-video models
-                {"name": "wan-t2v-720p", "requires_image": False, "display_name": "WAN T2V 720p"},
-                {"name": "wan-t2v-480p", "requires_image": False, "display_name": "WAN T2V 480p"},
-                {"name": "veo2", "requires_image": False, "display_name": "Google Veo 2"}
-            ]
-            
-            # Create variables for results
-            video_results = {model["name"]: {"url": None, "path": None, "success": False} for model in models_to_test}
-            
-            # Ask user which models to test
-            print("\n=== Select Video Generation Models ===")
-            print("Available models:")
-            for i, model in enumerate(models_to_test, 1):
-                model_type = "Image-to-Video" if model["requires_image"] else "Text-to-Video"
-                print(f"{i}. {model['display_name']} ({model_type})")
-            print("6. Test all models in parallel")
-            print("7. Exit test")
-            
-            choice = input("\nEnter your choice (1-7): ")
-            
-            if choice == '7':
-                print("Exiting test.")
-                return False
-                
-            selected_models = []
-            if choice == '6':
-                # Test all models
-                selected_models = models_to_test
-                parallel = True
-                print("\n=== Testing All Models in Parallel ===")
-            else:
+            # Monitor progress
+            for future in concurrent.futures.as_completed(futures):
+                model = futures[future]
                 try:
-                    model_index = int(choice) - 1
-                    if 0 <= model_index < len(models_to_test):
-                        selected_models = [models_to_test[model_index]]
-                        parallel = False
-                        model_type = "Image-to-Video" if selected_models[0]["requires_image"] else "Text-to-Video"
-                        print(f"\n=== Testing {selected_models[0]['display_name']} ({model_type}) ===")
-                    else:
-                        print("Invalid choice. Exiting test.")
-                        return False
-                except ValueError:
-                    print("Invalid input. Exiting test.")
-                    return False
+                    result = future.result()
+                    image_results.append(result)
+                    
+                    if result["success"]:
+                        generated["images"][model] = result["path"]
+                except Exception as e:
+                    print(f"❌ Error processing result for {model}: {str(e)}")
+        
+        # Display results summary for images
+        print("\n===== IMAGE GENERATION RESULTS =====")
+        successful_images = [r for r in image_results if r["success"]]
+        
+        print(f"Tested {len(selected_models)} models")
+        print(f"Successfully generated: {len(successful_images)}")
+        
+        for result in successful_images:
+            print(f"✅ {result['model']}: {os.path.basename(result['path'])}")
+        
+        # Display all successful images
+        if successful_images:
+            print("\n===== DISPLAYING IMAGES =====")
+            for result in successful_images:
+                print(f"Opening image from {result['model']}...")
+                api.display_media(result['path'], "image")
+                time.sleep(0.5)  # Short delay between images
+        
+        # Ask user if they want to generate 3D models after seeing the images
+        test_threed = False
+        if successful_images:
+            test_threed = input("\nGenerate 3D models from images? (y/n): ").lower().strip() == 'y'
             
-            # Define worker function for concurrent execution
-            def generate_video_worker(model_info):
-                model_name = model_info["name"]
-                display_name = model_info["display_name"]
-                requires_image = model_info["requires_image"]
-                
-                print(f"\n🎬 Generating Video with {display_name}...")
-                
-                # Prepare parameters - always use the same seed and prompt for consistency
-                params = {
-                    "prompt": stored_prompt,  # Use the stored prompt for all models
-                    "model": model_name,
-                    "seed": 42  # Use consistent seed for comparison
-                }
-                
-                # Add image URL for image-to-video models
-                if requires_image:
-                    if stored_image_url:
-                        params["image_url"] = stored_image_url
+        # Generate 3D models from selected images if user wants to
+        if test_threed:
+            print("\n===== GENERATING 3D MODELS =====")
+            
+            # Display available 3D models and let the user choose
+            print("\nAvailable 3D models:")
+            print("1. Trellis - Better for objects, detailed textures, faster")
+            print("2. Hunyuan3D - Better for detailed geometry, slower")
+            
+            # Get 3D model selection from user
+            threed_model = "trellis"  # Default to Trellis
+            threed_model_choice = input("\nChoose 3D model (1 or 2, default is 1): ").strip()
+            if threed_model_choice == "2":
+                threed_model = "hunyuan3d"
+            
+            print(f"\nSelected 3D model: {threed_model}")
+            
+            # Ask user which images to use
+            print("\nAvailable successful images:")
+            for i, result in enumerate(successful_images):
+                print(f"{i+1}. {result['model']}")
+            
+            # Get user's choice for which images to use
+            while True:
+                try:
+                    image_choices_input = input("\nEnter the numbers of the images to use for 3D models (comma-separated): ").strip()
+                    image_indices = [int(idx.strip()) - 1 for idx in image_choices_input.split(',')]
+                    
+                    # Validate if all provided indices are valid
+                    valid_choices = [idx for idx in image_indices if 0 <= idx < len(successful_images)]
+                    
+                    if valid_choices:
+                        threed_chosen_results = [successful_images[idx] for idx in valid_choices]
+                        break
                     else:
-                        print(f"❌ Error: Image URL required for {display_name} but none available")
+                        print(f"Please enter valid numbers between 1 and {len(successful_images)}")
+                except ValueError:
+                    print("Please enter valid numbers separated by commas")
+            
+            # Storage for 3D results
+            threed_results = []
+            
+            # Function to generate a 3D model from an image
+            def generate_threed_worker(chosen_result):
+                print(f"\n🧊 Generating 3D model from image: {chosen_result['model']}")
+                try:
+                    # Get the URL string from the object or directly
+                    image_url = chosen_result['url']
+                    
+                    # If it's a FileOutput object, extract the url attribute
+                    if hasattr(image_url, 'url'):
+                        image_url = image_url.url
+                    
+                    # Ensure we have a valid URL string
+                    if not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')):
+                        print(f"Invalid image URL from {chosen_result['model']}, skipping...")
                         return {
-                            "model": model_name,
+                            "image_source": chosen_result['model'],
                             "url": None,
                             "path": None,
                             "success": False
                         }
-                
-                # Generate video
-                try:
-                    video_url = api.generate_video(**params)
                     
-                    if video_url:
-                        print(f"✅ {display_name} generation complete: {video_url}")
-                        # Download video
-                        video_path = download_file(
-                            video_url, 
-                            output_dir="test_videos", 
-                            filename=f"test_{model_name}.mp4"
+                    # Generate the 3D model using the selected model
+                    print(f"Generating 3D model using {chosen_result['model']} image with {threed_model.upper()}...")
+                    threed_url = api.generate_threed(
+                        image_url=image_url,
+                        model=threed_model,  # Use the selected 3D model
+                        seed=1234,
+                        randomize_seed=True,
+                        texture_size=1024,
+                        mesh_simplify=0.9,
+                        generate_color=True,
+                        generate_normal=True,
+                        ss_sampling_steps=38,
+                        slat_sampling_steps=12,
+                        ss_guidance_strength=7.5,
+                        slat_guidance_strength=3
+                    )
+                    
+                    if threed_url:
+                        print(f"✅ 3D model generated successfully from {chosen_result['model']} image")
+                        timestamp = time.strftime("%Y%m%d-%H%M%S")
+                        threed_path = api.download_file(
+                            threed_url, 
+                            output_dir="test_3d_models", 
+                            filename=f"test_3d_{chosen_result['model']}_{timestamp}.glb"
                         )
                         
-                        if video_path:
-                            return {
-                                "model": model_name,
-                                "url": video_url,
-                                "path": video_path,
-                                "success": True
-                            }
-                        else:
-                            print(f"❌ Failed to download video for {display_name}")
+                        if threed_path:
+                            print(f"Opening 3D model from {chosen_result['model']}...")
+                            api.display_media(threed_path, "model")  # Display the 3D model
+                        
+                        return {
+                            "image_source": chosen_result['model'],
+                            "url": threed_url,
+                            "path": threed_path,
+                            "success": threed_path is not None
+                        }
                     else:
-                        print(f"❌ {display_name} generation failed")
+                        print(f"❌ 3D model generation failed with {chosen_result['model']} image")
                 except Exception as e:
-                    print(f"❌ Error with {display_name}: {str(e)}")
+                    print(f"❌ Error generating 3D model from {chosen_result['model']} image: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
                 
                 return {
-                    "model": model_name,
+                    "image_source": chosen_result['model'],
                     "url": None,
                     "path": None,
                     "success": False
                 }
             
-            # Generate videos (parallel or sequential)
-            if parallel:
-                print("\n=== Starting Parallel Video Generation ===")
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(selected_models)) as executor:
+            # Generate 3D models with selected images in parallel
+            if threed_chosen_results:
+                print(f"\nGenerating {len(threed_chosen_results)} 3D models with {threed_model.upper()} model")
+                
+                # Use ThreadPoolExecutor to run 3D generation in parallel
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(threed_chosen_results), 4)) as executor:
                     # Submit tasks
-                    future_to_model = {
-                        executor.submit(generate_video_worker, model_info): model_info["name"]
-                        for model_info in selected_models
-                    }
+                    futures = {executor.submit(generate_threed_worker, result): result for result in threed_chosen_results}
                     
-                    # Display progress
-                    print(f"Testing {len(selected_models)} video generation models in parallel...")
-                    pending = set(future_to_model.keys())
-                    completed = []
-                    start_time = time.time()
-                    last_update_time = 0
+                    # Monitor progress
+                    for future in concurrent.futures.as_completed(futures):
+                        result = future.result()
+                        threed_results.append(result)
+                        
+                        # Store successful results
+                        if result["success"]:
+                            if "threed_models" not in generated:
+                                generated["threed_models"] = []
+                            generated["threed_models"].append(result["path"])
+                
+                # Display results summary
+                print("\n===== 3D MODEL GENERATION RESULTS =====")
+                successful_threed = [r for r in threed_results if r["success"]]
+                
+                print(f"Attempted: {len(threed_chosen_results)} images with {threed_model.upper()} model")
+                print(f"Successfully generated: {len(successful_threed)}")
+                
+                for result in successful_threed:
+                    print(f"✅ 3D from {result['image_source']} image: {os.path.basename(result['path'])}")
+        
+        # Ask user if they want to generate videos after seeing the images
+        test_video = False
+        if successful_images:
+            test_video = input("\nGenerate videos from an image? (y/n): ").lower().strip() == 'y'
+        
+        # 2. Generate video using selected images if user wants to
+        if test_video:
+            print("\n===== GENERATING VIDEO =====")
+            
+            # Ask user which images to use
+            print("\nAvailable successful images:")
+            for i, result in enumerate(successful_images):
+                print(f"{i+1}. {result['model']}")
+            
+            # Get user's choice for which images to use
+            while True:
+                try:
+                    image_choices_input = input("\nEnter the numbers of the images to use for video (comma-separated): ").strip()
+                    image_indices = [int(idx.strip()) - 1 for idx in image_choices_input.split(',')]
                     
-                    while pending:
-                        # Poll for completion
-                        just_done, pending = concurrent.futures.wait(
-                            pending, 
-                            timeout=2.0,
-                            return_when=concurrent.futures.FIRST_COMPLETED
+                    # Validate if all provided indices are valid
+                    valid_choices = [idx for idx in image_indices if 0 <= idx < len(successful_images)]
+                    
+                    if valid_choices:
+                        chosen_results = [successful_images[idx] for idx in valid_choices]
+                        break
+                    else:
+                        print(f"Please enter valid numbers between 1 and {len(successful_images)}")
+                except ValueError:
+                    print("Please enter valid numbers separated by commas")
+            
+            # Ask user if they want to test high-res 720p (more tokens, slower)
+            test_720p = input("Test high-resolution 720p video? (y/n): ").lower().strip() == 'y'
+            
+            # Select video model based on 720p choice - only ONE model
+            video_model = "wan-i2v-720p" if test_720p else "wan-i2v-480p"
+            
+            # Storage for video results
+            video_results = []
+            
+            # Prepare base parameters for video generation
+            base_video_params = {
+                "prompt": test_prompts["video"],
+                "aspect_ratio": "16:9"
+            }
+            
+            # Function to generate a video with a specific model and image
+            def generate_video_worker(model_name, chosen_result):
+                print(f"\n🎬 Generating video with model: {model_name} using image from {chosen_result['model']}")
+                try:
+                    # Get the URL string from the object or directly
+                    image_url = chosen_result['url']
+                    
+                    # If it's a FileOutput object, extract the url attribute
+                    if hasattr(image_url, 'url'):
+                        image_url = image_url.url
+                    
+                    # Ensure we have a valid URL string
+                    if not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')):
+                        print(f"Invalid image URL from {chosen_result['model']}, skipping...")
+                        return {
+                            "model": model_name,
+                            "image_source": chosen_result['model'],
+                            "url": None,
+                            "path": None,
+                            "success": False
+                        }
+                    
+                    # Clone the base parameters and add model-specific options
+                    video_params = base_video_params.copy()
+                    video_params["model"] = model_name
+                    video_params["image_url"] = image_url
+                    
+                    # Generate the video
+                    print(f"Generating video using {chosen_result['model']} image...")
+                    video_url = api.generate_video(**video_params)
+                    
+                    if video_url:
+                        print(f"✅ Video generated successfully with {model_name} using {chosen_result['model']} image")
+                        timestamp = time.strftime("%Y%m%d-%H%M%S")
+                        video_path = api.download_file(
+                            video_url, 
+                            output_dir="test_videos", 
+                            filename=f"test_{model_name}_{chosen_result['model']}_{timestamp}.mp4"
                         )
                         
-                        # Process completed tasks
-                        for future in just_done:
-                            model_name = future_to_model[future]
-                            try:
-                                result = future.result()
-                                video_results[model_name] = result
-                                completed.append(model_name)
-                            except Exception as e:
-                                print(f"❌ Error processing result for {model_name}: {str(e)}")
+                        return {
+                            "model": model_name,
+                            "image_source": chosen_result['model'],
+                            "url": video_url,
+                            "path": video_path,
+                            "success": video_path is not None
+                        }
+                    else:
+                        print(f"❌ Video generation failed with {model_name} using {chosen_result['model']} image")
+                except Exception as e:
+                    print(f"❌ Error with {model_name} using {chosen_result['model']} image: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                
+                return {
+                    "model": model_name,
+                    "image_source": chosen_result['model'],
+                    "url": None,
+                    "path": None,
+                    "success": False
+                }
+            
+            # Generate videos with selected model in parallel
+            if chosen_results:
+                print(f"\nGenerating {len(chosen_results)} videos with model {video_model}")
+                print(f"Using prompt: '{test_prompts['video'][:50]}...'")
+                
+                # Use ThreadPoolExecutor to run video generation in parallel
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(chosen_results), 4)) as executor:
+                    # Submit tasks
+                    futures = {executor.submit(generate_video_worker, video_model, result): result for result in chosen_results}
+                    
+                    # Monitor progress
+                    for future in concurrent.futures.as_completed(futures):
+                        result = future.result()
+                        video_results.append(result)
                         
-                        # Print progress update
-                        current_time = time.time()
-                        if current_time - last_update_time >= 5.0 or just_done:
-                            elapsed = current_time - start_time
-                            print(f"⏳ Progress: {len(completed)}/{len(selected_models)} models complete ({elapsed:.1f}s elapsed)")
-                            if completed:
-                                print(f"   Completed: {', '.join(completed)}")
-                            last_update_time = current_time
+                        # Display the video immediately if generated successfully
+                        if result["success"]:
+                            print(f"Displaying video from {result['model']} using {result['image_source']} image...")
+                            api.display_media(result["path"], "video")
+                            # Add this video to generated videos list
+                            if "videos" not in generated:
+                                generated["videos"] = []
+                            generated["videos"].append(result["path"])
                 
-                print("\n=== Video Generation Tests Complete ===")
-                print(f"Total time: {time.time() - start_time:.1f} seconds")
-            else:
-                # Sequential generation for a single model
-                model_info = selected_models[0]
-                result = generate_video_worker(model_info)
-                video_results[model_info["name"]] = result
-            
-            # Display results summary
-            print("\n=== Results Summary ===")
-            successful_models = []
-            failed_models = []
-            
-            for model in selected_models:
-                model_name = model["name"]
-                display_name = model["display_name"]
-                result = video_results[model_name]
+                # Display results summary
+                print("\n===== VIDEO GENERATION RESULTS =====")
+                successful_videos = [r for r in video_results if r["success"]]
                 
-                if result["success"]:
-                    successful_models.append(model_name)
-                    print(f"✅ {display_name}: Success - {result['url']}")
+                print(f"Tested {len(chosen_results)} image(s) with {video_model}")
+                print(f"Successfully generated: {len(successful_videos)}")
+                
+                for result in successful_videos:
+                    print(f"✅ {result['model']} using {result['image_source']} image: {os.path.basename(result['path'])}")
+            
+            # Update the music generation section to handle multiple videos
+            test_music = False
+            if generated.get("videos") and len(generated["videos"]) > 0:
+                test_music = input("\nGenerate music for videos? (y/n): ").lower().strip() == 'y'
+                
+                if test_music:
+                    # If there are multiple videos, ask which one to use for music
+                    selected_video = generated["videos"][0]  # Default to first video
+                    if len(generated["videos"]) > 1:
+                        print("\nSelect video to add music to:")
+                        for i, video_path in enumerate(generated["videos"]):
+                            print(f"{i+1}. {os.path.basename(video_path)}")
+                        
+                        try:
+                            video_choice = int(input("\nEnter the number of the video to use: ")) - 1
+                            if 0 <= video_choice < len(generated["videos"]):
+                                selected_video = generated["videos"][video_choice]
+                        except ValueError:
+                            print(f"Invalid choice, using first video")
+                    
+                    generated["video"] = selected_video  # Set this for the music generation logic
+        
+        # Ask about generating music after seeing the video
+        test_music = False
+        if generated["video"]:
+            test_music = input("\nGenerate music for this video? (y/n): ").lower().strip() == 'y'
+        
+        # 3. Generate music if selected
+        if test_music:
+            print("\n===== GENERATING MUSIC =====")
+            
+            try:
+                print(f"Generating music with prompt: '{test_prompts['music'][:50]}...'")
+                
+                music_url = api.generate_music(
+                    prompt=test_prompts["music"],
+                    duration=8,
+                    model_version="stereo-large"
+                )
+                
+                if music_url:
+                    print("✅ Music generated successfully")
+                    timestamp = time.strftime("%Y%m%d-%H%M%S")
+                    music_path = api.download_file(
+                        music_url, 
+                        output_dir="test_music", 
+                        filename=f"test_music_{timestamp}.mp3"
+                    )
+                    
+                    if music_path:
+                        generated["music"] = music_path
+                        print(f"Music saved to: {music_path}")
+                        api.display_media(music_path, "audio")
+                    else:
+                        print("❌ Failed to download music")
                 else:
-                    failed_models.append(model_name)
-                    print(f"❌ {display_name}: Failed")
-            
-            # Play successful videos
-            if successful_models:
-                print(f"\n=== Playing {len(successful_models)} Successful Videos ===")
-                for model_name in successful_models:
-                    display_name = next(m["display_name"] for m in models_to_test if m["name"] == model_name)
-                    video_path = video_results[model_name]["path"]
+                    print("❌ Music generation failed")
                     
-                    print(f"\n▶️ Playing video from {display_name}...")
-                    display_success = display_media(video_path, "video")
-                    
-                    if not display_success:
-                        print(f"Note: Could not play the video, but it was generated and saved at: {video_path}")
-                    
-                    # Ask user if they want to continue to the next video
-                    if len(successful_models) > 1 and model_name != successful_models[-1]:
-                        input("\nPress Enter to continue to the next video...")
-            else:
-                print("\n❌ No successful video generations to display")
-            
-            # Ask if user wants to test more models
-            if len(selected_models) < len(models_to_test):
-                choice = input("\nDo you want to test more models? (y/n): ").lower()
-                if choice == 'y':
-                    # Return True to indicate we should continue testing
-                    return True
-            
-            # Return False to indicate we're done testing
-            return False
+            except Exception as e:
+                print(f"❌ Error generating music: {str(e)}")
         
-        # Start the model testing loop
-        continue_testing = True
-        while continue_testing and image_url:
-            continue_testing = test_selected_models(image_url, creative_prompt)
+        # 4. Automatically merge video and music if both are available
+        if generated["video"] and generated["music"]:
+            print("\n===== MERGING VIDEO AND MUSIC =====")
+            
+            try:
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                merged_path = api.merge_video_audio(
+                    generated["video"], 
+                    generated["music"],
+                    filename=f"merged_{timestamp}.mp4"
+                )
+                
+                if merged_path:
+                    generated["merged"] = merged_path
+                    print(f"✅ Merged file saved to: {merged_path}")
+                    api.display_media(merged_path, "video")
+                else:
+                    print("❌ Failed to merge video and music")
+                    
+            except Exception as e:
+                print(f"❌ Error merging video and music: {str(e)}")
         
-        print("\n==== VIDEO MODELS TEST COMPLETE ====")
-
-    # Choose which function to run
-    # run_interactive_demo()
-    run_interactive_demo() 
+        # Summary at exit
+        print("\n===== GENERATED MEDIA SUMMARY =====")
+        
+        if generated["images"]:
+            print("\nImages:")
+            for model, path in generated["images"].items():
+                print(f"  - {model}: {path}")
+        
+        if generated.get("threed_models"):
+            print("\n3D Models:")
+            for path in generated["threed_models"]:
+                print(f"  - {path}")
+                
+        if generated["video"]:
+            print(f"\nVideo: {generated['video']}")
+            
+        if generated["music"]:
+            print(f"\nMusic: {generated['music']}")
+            
+        if generated["merged"]:
+            print(f"\nMerged: {generated['merged']}")
+    
+    # Run the test function
+    run_test()
+    

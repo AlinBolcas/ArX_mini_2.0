@@ -921,7 +921,7 @@ if __name__ == "__main__":
             
             if not idea:
                 print("No idea provided. Using a default example.")
-                idea = "realistic green caiman character, standing on two legs, appealing design, full-body, American beer advertisement, highly detailed, lifting a beer bottle and smiling, keep the same camera angle"
+                idea = "realistic green caiman, stylized character, realistic proportions, appealing design, made by Disney, full-body, standing on two legs in a neutral A-pose, VFX turntable, studio lighting environment, highly detailed, realistic texturing and shading"
                 print(f"Using default: {idea}")
                 
             # Initialize the generator
