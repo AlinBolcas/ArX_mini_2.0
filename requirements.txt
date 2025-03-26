@@ -43,3 +43,6 @@ tqdm>=4.66.0
 customtkinter>=5.2.0
 colorama>=0.4.6
 graphviz>=0.20.1
+
+# Added from the code block
+PyMuPDF>=1.22.5

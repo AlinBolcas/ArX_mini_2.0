@@ -8,6 +8,7 @@ A collection of video manipulation utilities for:
 - Extracting frames from videos
 - Converting videos to GIFs
 - Optimizing video file size
+- Converting MOV to MP4
 
 Requirements:
 - FFmpeg installed and accessible in PATH
@@ -515,6 +516,87 @@ def video_optimise(
         return False
 
 
+def convert_mov_to_mp4(
+    input_path: str,
+    output_path: str,
+    quality: str = "high",
+    preserve_audio: bool = True
+) -> bool:
+    """
+    Convert a MOV file to MP4 format with configurable quality.
+    
+    Args:
+        input_path: Path to the input MOV file
+        output_path: Path for the output MP4 file
+        quality: Quality preset ('high', 'medium', 'low')
+        preserve_audio: Whether to include audio in the output file
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not check_ffmpeg():
+        return False
+        
+    if not input_path.lower().endswith('.mov'):
+        print(f"Warning: Input file does not appear to be a MOV file: {input_path}")
+    
+    # Define quality presets
+    quality_presets = {
+        "high": {"crf": "18", "preset": "slow"},
+        "medium": {"crf": "23", "preset": "medium"},
+        "low": {"crf": "28", "preset": "fast"}
+    }
+    
+    # Use medium quality if the specified quality is not in presets
+    preset_config = quality_presets.get(quality.lower(), quality_presets["medium"])
+    
+    try:
+        # Build FFmpeg command
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-crf", preset_config["crf"],
+            "-preset", preset_config["preset"],
+            "-pix_fmt", "yuv420p"  # Ensure compatibility
+        ]
+        
+        # Handle audio settings
+        if preserve_audio:
+            cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+        else:
+            cmd.append("-an")
+        
+        # Add output path
+        cmd.append(output_path)
+        
+        # Get input file size for comparison
+        input_size = os.path.getsize(input_path) / (1024 * 1024)  # MB
+        
+        print(f"Converting MOV to MP4...")
+        print(f"Input: {input_path} ({input_size:.2f} MB)")
+        print(f"Quality: {quality} (CRF: {preset_config['crf']}, Preset: {preset_config['preset']})")
+        
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        if result.returncode != 0:
+            print(f"Error converting MOV to MP4: {result.stderr}")
+            return False
+        
+        # Get output file size for comparison
+        output_size = os.path.getsize(output_path) / (1024 * 1024)  # MB
+        
+        print(f"✅ MOV to MP4 conversion successful: {output_path}")
+        print(f"Original size: {input_size:.2f} MB")
+        print(f"Converted size: {output_size:.2f} MB")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error converting MOV to MP4: {str(e)}")
+        return False
+
+
 if __name__ == "__main__":
     import time
     from pathlib import Path
@@ -554,10 +636,10 @@ if __name__ == "__main__":
         
         return str(input_path), str(output_dir)
 
-    def test_video_loop(input_path, output_dir):
+    def video_loop_test(input_path, output_dir):
         """Test the video_loop function."""
         print("\n=== Testing Video Loop ===")
-        output_path = os.path.join(output_dir, "test_loop.mp4")
+        output_path = os.path.join(output_dir, "loop.mp4")
         
         # Get video info
         info = get_video_info(input_path)
@@ -579,7 +661,7 @@ if __name__ == "__main__":
             print(f"Video loop created: {output_path}")
             # Offer to create extended loop
             if prompt("Create extended loop? (y/n)", "y").lower() == "y":
-                extended_path = os.path.join(output_dir, "test_loop_extended.mp4")
+                extended_path = os.path.join(output_dir, "loop_extended.mp4")
                 repeats = int(prompt("Number of repeats", "2"))
                 
                 extended_success = create_extended_loop(
@@ -593,10 +675,10 @@ if __name__ == "__main__":
         
         return success
 
-    def test_video_speedup(input_path, output_dir):
+    def video_speedup_test(input_path, output_dir):
         """Test the video_speedup function."""
         print("\n=== Testing Video Speed-up ===")
-        output_path = os.path.join(output_dir, "test_speedup.mp4")
+        output_path = os.path.join(output_dir, "speedup.mp4")
         
         # Ask for speed factor
         speed_factor = float(prompt("Speed factor (e.g., 2.0 = twice as fast)", "2.0"))
@@ -615,7 +697,7 @@ if __name__ == "__main__":
         
         return success
 
-    def test_video_to_frames(input_path, output_dir):
+    def video_to_frames_test(input_path, output_dir):
         """Test the video_to_frames function."""
         print("\n=== Testing Video to Frames ===")
         frames_dir = os.path.join(output_dir, "frames")
@@ -653,10 +735,10 @@ if __name__ == "__main__":
         
         return success, frames_dir
 
-    def test_video_to_gif(input_path, output_dir):
+    def video_to_gif_test(input_path, output_dir):
         """Test the video_to_gif function."""
         print("\n=== Testing Video to GIF ===")
-        output_path = os.path.join(output_dir, "test_output.gif")
+        output_path = os.path.join(output_dir, "output.gif")
         
         # Get video info for context
         info = get_video_info(input_path)
@@ -689,10 +771,10 @@ if __name__ == "__main__":
         
         return success
 
-    def test_video_optimise(input_path, output_dir):
+    def video_optimise_test(input_path, output_dir):
         """Test the video_optimise function."""
         print("\n=== Testing Video Optimisation ===")
-        output_path = os.path.join(output_dir, "test_optimised.mp4")
+        output_path = os.path.join(output_dir, "optimised.mp4")
         
         # Get original video info
         info = get_video_info(input_path)
@@ -758,6 +840,45 @@ if __name__ == "__main__":
             print(f"Optimized video created: {output_path}")
         
         return success
+    
+    def convert_mov_to_mp4_test(input_path, output_dir):
+        """Test the convert_mov_to_mp4 function."""
+        print("\n=== Testing MOV to MP4 Conversion ===")
+        
+        # Check if input is MOV file or ask for one
+        if not input_path.lower().endswith('.mov'):
+            print("Current input is not a MOV file.")
+            mov_path = prompt("Please enter a path to a MOV file")
+            input_path = mov_path
+        
+        output_path = os.path.join(output_dir, "converted.mp4")
+        
+        # Ask for quality settings
+        quality_options = {
+            "high": "High quality, larger file size",
+            "medium": "Medium quality, balanced file size (default)",
+            "low": "Lower quality, smaller file size"
+        }
+        
+        print("Quality options:")
+        for key, value in quality_options.items():
+            print(f"{key}: {value}")
+        
+        quality = prompt("Quality", "medium")
+        preserve_audio = prompt("Preserve audio? (y/n)", "y").lower() == "y"
+        
+        # Convert MOV to MP4
+        success = convert_mov_to_mp4(
+            input_path=input_path,
+            output_path=output_path,
+            quality=quality,
+            preserve_audio=preserve_audio
+        )
+        
+        if success:
+            print(f"MOV to MP4 conversion completed: {output_path}")
+        
+        return success
 
     # Test menu
     print("\n" + "="*60)
@@ -772,12 +893,13 @@ if __name__ == "__main__":
     
     # Define test functions dictionary
     test_functions = {
-        "1": ("Video Loop", lambda: test_video_loop(input_path, output_dir)),
-        "2": ("Video Speed-up", lambda: test_video_speedup(input_path, output_dir)),
-        "3": ("Video to Frames", lambda: test_video_to_frames(input_path, output_dir)),
-        "4": ("Video to GIF", lambda: test_video_to_gif(input_path, output_dir)),
-        "5": ("Video Optimisation", lambda: test_video_optimise(input_path, output_dir)),
-        "6": ("Display Video Info", lambda: print(f"Video info: {get_video_info(input_path)}"))
+        "1": ("Video Loop", lambda: video_loop_test(input_path, output_dir)),
+        "2": ("Video Speed-up", lambda: video_speedup_test(input_path, output_dir)),
+        "3": ("Video to Frames", lambda: video_to_frames_test(input_path, output_dir)),
+        "4": ("Video to GIF", lambda: video_to_gif_test(input_path, output_dir)),
+        "5": ("Video Optimisation", lambda: video_optimise_test(input_path, output_dir)),
+        "6": ("Display Video Info", lambda: print(f"Video info: {get_video_info(input_path)}")),
+        "7": ("MOV to MP4 Conversion", lambda: convert_mov_to_mp4_test(input_path, output_dir))
     }
     
     # Main test loop

@@ -526,12 +526,12 @@ class ReplicateAPI:
     def download_file(self, url: str, output_dir: Optional[str] = None, filename: Optional[str] = None) -> Optional[str]:
         """
         Download a file from a URL to a specific output directory.
-        
+
         Args:
             url: URL of the file to download
             output_dir: Directory to save the file (defaults to temp directory)
             filename: Optional filename (generated from timestamp if not provided)
-            
+
         Returns:
             Path to the downloaded file
         """
@@ -541,7 +541,7 @@ class ReplicateAPI:
                 print(f"Received dictionary output: {url}")
                 # Try to find a model file or any other usable URL in the dictionary
                 model_file = None
-                
+
                 # Check for model_file first
                 if 'model_file' in url:
                     model_file = url['model_file']
@@ -558,25 +558,25 @@ class ReplicateAPI:
                             break
                     else:
                         raise ValueError(f"No valid URL found in dictionary: {url}")
-                
+
             # Create output directory if provided
             if output_dir:
                 # Create base output directory in data folder
                 base_dir = Path("data/output")
                 if not base_dir.exists():
                     base_dir.mkdir(parents=True, exist_ok=True)
-                    
+
                 # Create specific media directory
                 media_dir = base_dir / output_dir
                 if not media_dir.exists():
                     media_dir.mkdir(parents=True, exist_ok=True)
-                    
+
                 # Generate filename if not provided
                 if not filename:
                     extension = url.split('.')[-1] if '.' in url.split('/')[-1] else 'tmp'
                     timestamp = time.strftime("%Y%m%d-%H%M%S")
                     filename = f"{output_dir}_{timestamp}.{extension}"
-                    
+
                 output_path = media_dir / filename
             else:
                 # Use temp directory if no output directory specified
@@ -584,19 +584,19 @@ class ReplicateAPI:
                 fd, output_path = tempfile.mkstemp(suffix=f'.{extension}')
                 os.close(fd)
                 output_path = Path(output_path)
-            
+
             # Download the file
             print(f"Downloading to {output_path}...")
             response = requests.get(url, stream=True)
             response.raise_for_status()
-            
+
             with open(output_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-                    
+
             print(f"Downloaded successfully ({os.path.getsize(output_path) / 1024:.1f} KB)")
             return str(output_path)
-            
+
         except Exception as e:
             print(f"Error downloading file: {e}")
             return None
@@ -607,14 +607,14 @@ class ReplicateAPI:
             if not os.path.exists(file_path):
                 print(f"File not found: {file_path}")
                 return False
-                
+
             if sys.platform == "darwin":  # macOS
                 if media_type == "image":
                     # Try QuickLook first
                     print("Opening image with QuickLook...")
-                    subprocess.run(["qlmanage", "-p", file_path], 
-                                stdout=subprocess.DEVNULL, 
-                                stderr=subprocess.DEVNULL)
+                    subprocess.run(["qlmanage", "-p", file_path],
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
                 elif media_type == "video":
                     # For videos, use QuickTime Player instead of QuickLook for better playback
                     print("Opening video with QuickTime Player...")
@@ -627,20 +627,20 @@ class ReplicateAPI:
                     # Open 3D model with default application
                     print("Opening 3D model with default viewer...")
                     subprocess.run(["open", file_path])
-                    
+
             elif sys.platform == "win32":  # Windows
                 # Use the default application
                 os.startfile(file_path)
-                
+
             else:  # Linux
                 try:
                     subprocess.run(["xdg-open", file_path])
                 except:
                     print(f"Could not open file: {file_path}")
                     return False
-                    
+
             return True
-        
+
         except Exception as e:
             print(f"Error displaying media: {e}")
             return False
@@ -652,12 +652,12 @@ class ReplicateAPI:
             output_dir = Path("data/output/videos")
             if not output_dir.exists():
                 output_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Generate output filename if not provided
             if not filename:
                 timestamp = time.strftime("%Y%m%d-%H%M%S")
                 filename = f"merged_{timestamp}.mp4"
-                
+
             output_path = output_dir / filename
             
             print(f"Merging video and audio to {output_path}...")
@@ -680,14 +680,14 @@ class ReplicateAPI:
             except (subprocess.SubprocessError, FileNotFoundError):
                 print("Error: ffmpeg not found. Please install ffmpeg to merge video and audio.")
                 return None
-                
+            
             # Run ffmpeg command
             process = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
             if process.returncode != 0:
                 print(f"Error merging files: {process.stderr.decode()}")
                 return None
-                
+            
             print(f"Successfully merged video and audio to {output_path}")
             return str(output_path)
             
@@ -765,11 +765,26 @@ if __name__ == "__main__":
             # "music": "Orchestral soundtrack with whimsical undertones, representing the playful nature of a Disney-styled caiman character, gentle woodwind melodies with vibrant string sections, medium tempo evolving composition, evokes feelings of adventure and charm, suitable for a character introduction scene, cinematic quality, inspired by classic Disney scores"
             
             # Mongolian-inspired 3D printable gift prompts
-            "image": "Abstract sculptural desk piece inspired by Mongolian culture, featuring elegant flowing lines and a harmonious design, incorporating traditional motifs and symbols, polished stone base with turquoise and coral accents, number 100 subtly incorporated into base pattern, mixed media approach with wood-like and metal textures, elegant 8-inch tall composition suitable for desk display, dramatic lighting highlighting curved contours, product photography with shallow depth of field, ultra-detailed for high-resolution 3D printing",
+            # "image": "Abstract sculptural desk piece inspired by Mongolian culture, featuring elegant flowing lines and a harmonious design, incorporating traditional motifs and symbols, polished stone base with turquoise and coral accents, number 100 subtly incorporated into base pattern, mixed media approach with wood-like and metal textures, elegant 8-inch tall composition suitable for desk display, dramatic lighting highlighting curved contours, product photography with shallow depth of field, ultra-detailed for high-resolution 3D printing",
             
-            "video": "Cinematic product showcase of a Mongolian-inspired desk sculpture, camera slowly orbiting to reveal the harmonious design and traditional motifs, focus pulls highlighting intricate details and craftsmanship, close-up shots of turquoise and coral accents embedded in polished stone base, reveal of subtle 100-day symbolism integrated into design pattern, gentle rotation showing how light interacts with mixed wood and metallic surfaces, transitions demonstrating how different viewing angles reveal different aspects of the design, warm directional lighting creating dramatic shadows, 8K resolution with realistic material rendering",
+            # "video": "Cinematic product showcase of a Mongolian-inspired desk sculpture, camera slowly orbiting to reveal the harmonious design and traditional motifs, focus pulls highlighting intricate details and craftsmanship, close-up shots of turquoise and coral accents embedded in polished stone base, reveal of subtle 100-day symbolism integrated into design pattern, gentle rotation showing how light interacts with mixed wood and metallic surfaces, transitions demonstrating how different viewing angles reveal different aspects of the design, warm directional lighting creating dramatic shadows, 8K resolution with realistic material rendering",
             
-            "music": "Romantic composition featuring traditional Mongolian instruments with modern accompaniment, capturing the essence of Mongolian culture through a harmonious melody, subtle textures creating depth, medium-slow tempo with gentle rhythm suggesting heartbeats, emotional progression from tender beginning to passionate middle section symbolizing 100 days together, traditional Mongolian scales with modern harmonic structure, warm reverb creating spatial dimension, culminating in intertwining melodic lines representing two lives coming together"
+            # "music": "Romantic composition featuring traditional Mongolian instruments with modern accompaniment, capturing the essence of Mongolian culture through a harmonious melody, subtle textures creating depth, medium-slow tempo with gentle rhythm suggesting heartbeats, emotional progression from tender beginning to passionate middle section symbolizing 100 days together, traditional Mongolian scales with modern harmonic structure, warm reverb creating spatial dimension, culminating in intertwining melodic lines representing two lives coming together"
+            
+            # Mongolian BJL Jewelry Box Designs
+            # "image": "Hexagonal Mongolian ger-shaped wooden jewelry box with embossed 'BJL' logo on lid, handcrafted from rich cedar wood featuring intricate traditional Mongolian endless knot (Ulzii) patterns carved into sides, turquoise and coral inlay details, silver hardware with aged patina, felt-lined interior, product photography with dramatic side lighting highlighting wood grain and embossed details, ultra-detailed rendering for 3D printing, top view showing the prominent BJL logo surrounded by symmetrical traditional patterns",
+            
+            # "image": "Circular Mongolian jewelry case crafted from aromatic sandalwood with prominently embossed 'BJL' logo centered on the domed lid, traditional Mongolian 'khamar ugalz' (nose pattern) carvings flowing across the surface, silver filigree trim with inlaid turquoise cabochons, red silk interior with multiple compartments, photographed from a 45-degree angle with soft directional lighting emphasizing the carved texture, intricate locking mechanism designed like a traditional Mongolian belt buckle, detailed for high-resolution 3D printing",
+            
+            # "image": "Octagonal Mongolian wedding jewelry box resembling a traditional ger (yurt), crafted from polished birch wood with 'BJL' logo emblazoned in silver on the center of the lid, surrounded by concentric rings of traditional Mongolian cloud and mountain patterns, small silver hooves as feet, interior lined with blue silk featuring hidden compartments, photographed from above with one side open revealing the luxurious interior, dramatic lighting creating strong contrast between light wood and dark carved recesses, precise details optimized for 3D printing and production",
+            
+            "image": "Square Mongolian jewelry chest inspired by nomadic storage trunks, constructed from dark walnut with prominent raised 'BJL' logo in bronze on the center of the lid, surrounded by traditional Mongolian four powerful animals pattern (dragon, tiger, phoenix, turtle) deeply carved into the wood, metal corner protectors shaped like traditional Mongolian saddle decorations, red leather bindings and turquoise inlays contrasting with the wood, interior divided into geometrically balanced compartments, photographed with lid partially open, dramatic overhead lighting casting detailed shadows across the relief carvings",
+            
+            # "image": "Arched Mongolian jewelry casket inspired by traditional horse saddlebags, constructed from amber-colored cedar with the 'BJL' logo integrated into a central medallion design on the curved lid, traditional 'altan khee' (golden ornament) pattern encircling the logo, copper fittings with turquoise inlays, hand-painted details in traditional Mongolian blue and orange mineral pigments, interior lined with scented cedarwood featuring adjustable dividers, professional product photography with multiple light sources emphasizing the varied textures and contours, ultra-realistic rendering suitable for manufacturing presentation",
+            
+            "video": "Cinematic product showcase of a hexagonal ger-shaped Mongolian jewelry box, camera slowly orbiting to reveal the 'BJL' logo embossed prominently on the wooden lid, focus pulls highlighting the intricate endless knot carvings and turquoise inlays along the edges, detailed shots of the traditional patterns flowing around the six sides of the box, gentle rotation showing how light interacts with the polished wood and silver hardware, close-up of the lid opening to reveal the felt-lined interior with specialized compartments for jewelry storage, transitions showing different viewing angles of the embossed BJL logo surrounded by traditional Mongolian motifs, warm directional lighting creating rich shadows that emphasize the craftsmanship, 8K resolution with photorealistic wood grain textures",
+            
+            "music": "Serene composition featuring traditional Mongolian morin khuur (horsehead fiddle) and indigenous flutes, creating an authentic cultural atmosphere with gentle rhythmic patterns inspired by horse gaits, meditative melody conveying the elegance of Mongolian jewelry traditions, subtle percussion elements using traditional instruments like the yoochin (hammered dulcimer), layered harmonies representing the combination of traditional craft and modern luxury embodied by the BJL brand, natural acoustic recording with minimal processing, embracing the organic warmth of the instruments and their cultural significance"
             
             # Sonic the Hedgehog character asset prompts (full body version)
             # "image": "Realistic Sonic the Hedgehog, stylized character with realistic proportions, appealing design, vibrant blue fur with detailed quills, full-body depiction standing in a neutral A-pose, VFX turntable setup, studio lighting environment, highly detailed with realistic texturing and shading, red sneakers with white strap, white gloves, emerald green eyes, cinematic quality, 8K resolution",
@@ -1096,7 +1111,7 @@ if __name__ == "__main__":
                             "path": None,
                             "success": False
                         }
-                    
+                
                     # Clone the base parameters and add model-specific options
                     video_params = base_video_params.copy()
                     video_params["model"] = model_name
@@ -1228,7 +1243,6 @@ if __name__ == "__main__":
                         print("❌ Failed to download music")
                 else:
                     print("❌ Music generation failed")
-                    
             except Exception as e:
                 print(f"❌ Error generating music: {str(e)}")
         
@@ -1250,7 +1264,6 @@ if __name__ == "__main__":
                     api.display_media(merged_path, "video")
                 else:
                     print("❌ Failed to merge video and music")
-                    
             except Exception as e:
                 print(f"❌ Error merging video and music: {str(e)}")
         
