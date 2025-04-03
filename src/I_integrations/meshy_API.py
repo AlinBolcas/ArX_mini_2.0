@@ -9,11 +9,8 @@ import asyncio
 from tqdm import tqdm
 from dotenv import load_dotenv
 
-# Import utilities using FileFinder
-from modules.VIII_utils.file_finder import FileFinder
-finder = FileFinder()
-utils = finder.import_module('utils.py')
-quick_look = utils.quick_look
+# Import utility using direct path instead of FileFinder
+from src.VI_utils.utils import quick_look
 
 # Load environment variables
 load_dotenv()

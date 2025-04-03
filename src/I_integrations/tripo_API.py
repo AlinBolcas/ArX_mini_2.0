@@ -344,23 +344,6 @@ if __name__ == "__main__":
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         text_model_path = str(output_dir / f"text_model_{timestamp}.glb")
         
-        try:
-            text_model = await tripo.generate_threed(
-                prompt=creative_prompt,
-                output_path=text_model_path,
-                texture_quality="detailed"
-            )
-            
-            print(f"\n✅ Text-to-3D model saved to: {text_model}")
-            
-            # Preview the model
-            await tripo.preview_model(text_model)
-            input("\nPress Enter to continue...")
-            
-        except Exception as e:
-            print(f"\n❌ Text-to-3D generation failed: {e}")
-            text_model = None
-        
         # Only run image-to-3D if ReplicateAPI is available
         if replicate_available:
             # Step 2: Generate an image first, then convert to 3D
@@ -402,7 +385,25 @@ if __name__ == "__main__":
             
             except Exception as e:
                 print(f"\n❌ Error in image generation: {e}")
-        
+               
+        else:
+            try:
+                text_model = await tripo.generate_threed(
+                    prompt=creative_prompt,
+                    output_path=text_model_path,
+                    texture_quality="detailed"
+                )
+                
+                print(f"\n✅ Text-to-3D model saved to: {text_model}")
+                
+                # Preview the model
+                await tripo.preview_model(text_model)
+                input("\nPress Enter to continue...")
+                
+            except Exception as e:
+                print(f"\n❌ Text-to-3D generation failed: {e}")
+                text_model = None
+            
         print("\n===== DEMO COMPLETE =====")
     
     # Run the async demo

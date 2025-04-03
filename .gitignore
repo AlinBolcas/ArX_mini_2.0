@@ -161,7 +161,7 @@ cython_debug/
 
 # Project specific ignores
 # Data folder - contains generated content, resources, etc.
-/data/
+data/
 data/
 
 # Ignore all subdirectories in src/IV_pipelines except vidsGen
@@ -173,7 +173,7 @@ src/IV_pipelines/*
 !src/IV_pipelines/blender_gen/
 !src/IV_pipelines/dailies/
 !src/IV_pipelines/bukki/
-!src/IV_pipelines/archVizGen/
+!src/IV_pipelines/graphGen/
 !src/IV_pipelines/factory/
 !src/IV_pipelines/music_analyzer/
 !src/IV_pipelines/web_crawling

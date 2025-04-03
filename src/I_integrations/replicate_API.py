@@ -771,20 +771,12 @@ if __name__ == "__main__":
             
             # "music": "Romantic composition featuring traditional Mongolian instruments with modern accompaniment, capturing the essence of Mongolian culture through a harmonious melody, subtle textures creating depth, medium-slow tempo with gentle rhythm suggesting heartbeats, emotional progression from tender beginning to passionate middle section symbolizing 100 days together, traditional Mongolian scales with modern harmonic structure, warm reverb creating spatial dimension, culminating in intertwining melodic lines representing two lives coming together"
             
-            # Mongolian BJL Jewelry Box Designs
+            # Mongolian BJL Jewelry Box Designs (commented out)
             # "image": "Hexagonal Mongolian ger-shaped wooden jewelry box with embossed 'BJL' logo on lid, handcrafted from rich cedar wood featuring intricate traditional Mongolian endless knot (Ulzii) patterns carved into sides, turquoise and coral inlay details, silver hardware with aged patina, felt-lined interior, product photography with dramatic side lighting highlighting wood grain and embossed details, ultra-detailed rendering for 3D printing, top view showing the prominent BJL logo surrounded by symmetrical traditional patterns",
             
-            # "image": "Circular Mongolian jewelry case crafted from aromatic sandalwood with prominently embossed 'BJL' logo centered on the domed lid, traditional Mongolian 'khamar ugalz' (nose pattern) carvings flowing across the surface, silver filigree trim with inlaid turquoise cabochons, red silk interior with multiple compartments, photographed from a 45-degree angle with soft directional lighting emphasizing the carved texture, intricate locking mechanism designed like a traditional Mongolian belt buckle, detailed for high-resolution 3D printing",
+            # "video": "Cinematic product showcase of a hexagonal ger-shaped Mongolian jewelry box, camera slowly orbiting to reveal the 'BJL' logo embossed prominently on the wooden lid, focus pulls highlighting the intricate endless knot carvings and turquoise inlays along the edges, detailed shots of the traditional patterns flowing around the six sides of the box, gentle rotation showing how light interacts with the polished wood and silver hardware, close-up of the lid opening to reveal the felt-lined interior with specialized compartments for jewelry storage, transitions showing different viewing angles of the embossed BJL logo surrounded by traditional Mongolian motifs, warm directional lighting creating rich shadows that emphasize the craftsmanship, 8K resolution with photorealistic wood grain textures",
             
-            # "image": "Octagonal Mongolian wedding jewelry box resembling a traditional ger (yurt), crafted from polished birch wood with 'BJL' logo emblazoned in silver on the center of the lid, surrounded by concentric rings of traditional Mongolian cloud and mountain patterns, small silver hooves as feet, interior lined with blue silk featuring hidden compartments, photographed from above with one side open revealing the luxurious interior, dramatic lighting creating strong contrast between light wood and dark carved recesses, precise details optimized for 3D printing and production",
-            
-            "image": "Square Mongolian jewelry chest inspired by nomadic storage trunks, constructed from dark walnut with prominent raised 'BJL' logo in bronze on the center of the lid, surrounded by traditional Mongolian four powerful animals pattern (dragon, tiger, phoenix, turtle) deeply carved into the wood, metal corner protectors shaped like traditional Mongolian saddle decorations, red leather bindings and turquoise inlays contrasting with the wood, interior divided into geometrically balanced compartments, photographed with lid partially open, dramatic overhead lighting casting detailed shadows across the relief carvings",
-            
-            # "image": "Arched Mongolian jewelry casket inspired by traditional horse saddlebags, constructed from amber-colored cedar with the 'BJL' logo integrated into a central medallion design on the curved lid, traditional 'altan khee' (golden ornament) pattern encircling the logo, copper fittings with turquoise inlays, hand-painted details in traditional Mongolian blue and orange mineral pigments, interior lined with scented cedarwood featuring adjustable dividers, professional product photography with multiple light sources emphasizing the varied textures and contours, ultra-realistic rendering suitable for manufacturing presentation",
-            
-            "video": "Cinematic product showcase of a hexagonal ger-shaped Mongolian jewelry box, camera slowly orbiting to reveal the 'BJL' logo embossed prominently on the wooden lid, focus pulls highlighting the intricate endless knot carvings and turquoise inlays along the edges, detailed shots of the traditional patterns flowing around the six sides of the box, gentle rotation showing how light interacts with the polished wood and silver hardware, close-up of the lid opening to reveal the felt-lined interior with specialized compartments for jewelry storage, transitions showing different viewing angles of the embossed BJL logo surrounded by traditional Mongolian motifs, warm directional lighting creating rich shadows that emphasize the craftsmanship, 8K resolution with photorealistic wood grain textures",
-            
-            "music": "Serene composition featuring traditional Mongolian morin khuur (horsehead fiddle) and indigenous flutes, creating an authentic cultural atmosphere with gentle rhythmic patterns inspired by horse gaits, meditative melody conveying the elegance of Mongolian jewelry traditions, subtle percussion elements using traditional instruments like the yoochin (hammered dulcimer), layered harmonies representing the combination of traditional craft and modern luxury embodied by the BJL brand, natural acoustic recording with minimal processing, embracing the organic warmth of the instruments and their cultural significance"
+            # "music": "Serene composition featuring traditional Mongolian morin khuur (horsehead fiddle) and indigenous flutes, creating an authentic cultural atmosphere with gentle rhythmic patterns inspired by horse gaits, meditative melody conveying the elegance of Mongolian jewelry traditions, subtle percussion elements using traditional instruments like the yoochin (hammered dulcimer), layered harmonies representing the combination of traditional craft and modern luxury embodied by the BJL brand, natural acoustic recording with minimal processing, embracing the organic warmth of the instruments and their cultural significance"
             
             # Sonic the Hedgehog character asset prompts (full body version)
             # "image": "Realistic Sonic the Hedgehog, stylized character with realistic proportions, appealing design, vibrant blue fur with detailed quills, full-body depiction standing in a neutral A-pose, VFX turntable setup, studio lighting environment, highly detailed with realistic texturing and shading, red sneakers with white strap, white gloves, emerald green eyes, cinematic quality, 8K resolution",
@@ -807,6 +799,14 @@ if __name__ == "__main__":
             
             # "music": "Dynamic energetic soundtrack blending classic Sonic themes with modern electronic elements, electric guitar riffs with synthesizer accents, medium-fast tempo with driving drum beats, energetic verses with emotional chorus sections, musical progression from playful to heroic, subtle nostalgic Sonic game motifs reimagined with contemporary production, perfect for capturing the spirit of Sonic in his adventures"
             
+            # Futuristic Sculpture Design 2042
+            # "image": "7 timeless sculptural designs, made in 2042, abstract figurative design, made for 3d printing, all in a line, all very distinct, bright studio environment lighting, photo realistic, 4k, 8k",
+            # "image": "adorable skunk, stylized character, appealing design, full-body, moving naturally, VFX asset presentation, advertising, high-quality, photorealistic, hyper-realistic, realistic, 8k",
+            
+            "image": "black dragon character design, slick, elegant, agile and nimble looking, slim long aerodynamic shape, neutral binding pose, two wings, four legs, full-body, studio environment, highly detailed, hyper-realistic",
+            "video": "Cinematic turntable video of a timeless abstract figurative sculpture from 2042, camera slowly rotating 360 degrees around the piece, bright studio lighting highlighting the flowing contours and intricate details, focus pulls revealing the complex interplay of materials and textures, dramatic shadows emphasizing the sculptural form, photorealistic rendering with perfect material properties, 8K resolution with shallow depth of field",
+            
+            "music": "Ethereal ambient composition with futuristic sound design elements, minimal piano motifs floating over atmospheric synthesizer pads, slow evolving harmonies creating a sense of timelessness, subtle electronic percussion with occasional crystalline bell tones, gradual build in complexity representing the intricate details of the sculpture, modern production techniques creating spatial depth and dimension"
         }
         
         # Storage for generated media
@@ -909,14 +909,19 @@ if __name__ == "__main__":
             print("\nAvailable 3D models:")
             print("1. Trellis - Better for objects, detailed textures, faster")
             print("2. Hunyuan3D - Better for detailed geometry, slower")
-            
+            print("3. Both models - Try both and compare results")
+
             # Get 3D model selection from user
-            threed_model = "trellis"  # Default to Trellis
-            threed_model_choice = input("\nChoose 3D model (1 or 2, default is 1): ").strip()
+            threed_models = []  # Store selected models
+            threed_model_choice = input("\nChoose 3D model(s) (1, 2, or 3 for both, default is 1): ").strip()
             if threed_model_choice == "2":
-                threed_model = "hunyuan3d"
-            
-            print(f"\nSelected 3D model: {threed_model}")
+                threed_models = ["hunyuan3d"]
+            elif threed_model_choice == "3":
+                threed_models = ["trellis", "hunyuan3d"]
+            else:
+                threed_models = ["trellis"]  # Default to Trellis
+
+            print(f"\nSelected 3D model(s): {', '.join(threed_models)}")
             
             # Ask user which images to use
             print("\nAvailable successful images:")
@@ -944,8 +949,8 @@ if __name__ == "__main__":
             threed_results = []
             
             # Function to generate a 3D model from an image
-            def generate_threed_worker(chosen_result):
-                print(f"\n🧊 Generating 3D model from image: {chosen_result['model']}")
+            def generate_threed_worker(chosen_result, model_name):
+                print(f"\n🧊 Generating 3D model from image: {chosen_result['model']} using {model_name}")
                 try:
                     # Get the URL string from the object or directly
                     image_url = chosen_result['url']
@@ -965,10 +970,10 @@ if __name__ == "__main__":
                         }
                     
                     # Generate the 3D model using the selected model
-                    print(f"Generating 3D model using {chosen_result['model']} image with {threed_model.upper()}...")
+                    print(f"Generating 3D model using {chosen_result['model']} image with {model_name.upper()}...")
                     threed_url = api.generate_threed(
                         image_url=image_url,
-                        model=threed_model,  # Use the selected 3D model
+                        model=model_name,  # Use the selected 3D model
                         seed=1234,
                         randomize_seed=True,
                         texture_size=1024,
@@ -1014,17 +1019,25 @@ if __name__ == "__main__":
                     "success": False
                 }
             
-            # Generate 3D models with selected images in parallel
+            # Generate 3D models with selected images in parallel - updated for multiple model types
             if threed_chosen_results:
-                print(f"\nGenerating {len(threed_chosen_results)} 3D models with {threed_model.upper()} model")
+                all_tasks = []
+                # Create tasks for all combinations of selected images and models
+                for result in threed_chosen_results:
+                    for model in threed_models:
+                        all_tasks.append((result, model))
+                
+                print(f"\nGenerating {len(all_tasks)} 3D models ({len(threed_chosen_results)} images × {len(threed_models)} models)")
                 
                 # Use ThreadPoolExecutor to run 3D generation in parallel
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(threed_chosen_results), 4)) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(all_tasks), 4)) as executor:
                     # Submit tasks
-                    futures = {executor.submit(generate_threed_worker, result): result for result in threed_chosen_results}
+                    futures = {executor.submit(generate_threed_worker, result, model): (result, model) 
+                              for result, model in all_tasks}
                     
                     # Monitor progress
                     for future in concurrent.futures.as_completed(futures):
+                        result_img, model_name = futures[future]
                         result = future.result()
                         threed_results.append(result)
                         
@@ -1038,7 +1051,7 @@ if __name__ == "__main__":
                 print("\n===== 3D MODEL GENERATION RESULTS =====")
                 successful_threed = [r for r in threed_results if r["success"]]
                 
-                print(f"Attempted: {len(threed_chosen_results)} images with {threed_model.upper()} model")
+                print(f"Attempted: {len(threed_chosen_results)} images with {', '.join(threed_models)} models")
                 print(f"Successfully generated: {len(successful_threed)}")
                 
                 for result in successful_threed:
