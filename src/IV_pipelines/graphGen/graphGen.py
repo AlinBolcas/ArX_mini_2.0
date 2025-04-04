@@ -148,7 +148,7 @@ class GraphGen:
             dot.attr(
                 fontname='Helvetica,Arial,sans-serif',
                 fontcolor=self.colors['text'],
-                fontsize='24',  # Increased from '14'
+                fontsize='30',  # Increased from '14'
                 rankdir='TB',  # Top to bottom layout
                 bgcolor='transparent',  # Transparent background
                 dpi='300',
@@ -166,7 +166,7 @@ class GraphGen:
                 fillcolor=self.colors['secondary_blue'],
                 fontcolor=self.colors['text'],
                 fontname='Helvetica,Arial,sans-serif',
-                fontsize='20',  # Increased from '12'
+                fontsize='26',  # Increased from '12'
                 margin='0.2',
                 height='0.6',
                 width='0.8',
@@ -178,7 +178,7 @@ class GraphGen:
                 color=self.colors['edge_primary'],  # Brighter edges by default
                 fontcolor=self.colors['text'],
                 fontname='Helvetica,Arial,sans-serif',
-                fontsize='18',  # Increased from '10'
+                fontsize='22',  # Increased from '10'
                 penwidth='1.5',   # Thicker edges for better visibility
                 arrowsize='0.9'   # Larger arrow heads
             )
