@@ -190,7 +190,8 @@ class OllamaWrapper:
                     print(f"[OllamaWrapper] Error in tool execution: {tool_error}")
                     # Fall through to normal response if tool execution fails
             else:
-                print("[OllamaWrapper] No tools or available_tools provided, skipping tool branch.")
+                # print("[OllamaWrapper] No tools or available_tools provided, skipping tool branch.")
+                pass
 
             # Standard chat completion without tools
             response = ollama.chat(

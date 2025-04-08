@@ -7,7 +7,7 @@ from typing import Optional, List, Dict, Any, Iterator, Union
 
 # Fix module imports by adding project root to path
 current_dir = Path(__file__).resolve().parent
-project_root = current_dir.parent.parent.parent
+project_root = current_dir.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
@@ -147,7 +147,7 @@ class OllamaCodeEditor:
         if not self.current_file:
             file_path = input("Enter the path to the file you want to edit: ")
             self.set_file(file_path)
-        
+            
         print(printColoured(f"\nEditing file: {self.current_file}", "magenta"))
         if self.current_file_content:
             print(printColoured("\nCurrent file content:", "yellow"))
@@ -173,8 +173,8 @@ class OllamaCodeEditor:
                 # Get LLM to suggest a filename based on the description
                 suggested_filename = self.get_suggested_filename(description)
                 
-                # Add path to the filename
-                dir_path = os.path.dirname(self.current_file) if self.current_file else "src/IV_pipelines/ollama_help"
+                # Add path to the filename - default to data/output/code/
+                dir_path = os.path.dirname(self.current_file) if self.current_file else "data/output/code"
                 new_file_path = os.path.join(dir_path, suggested_filename)
                 
                 # Confirm with user
@@ -299,10 +299,11 @@ def main():
     print(printColoured("🚀 Ollama Code Editor", "cyan"))
     print(printColoured("===================", "cyan"))
     
-    # Hardcoded settings - no arguments needed
-    target_file = "src/IV_pipelines/ollama_help/markdown_to_json.py"
-    model = "llama3.2-vision:11b"  # Using gemma3:4b as it seems to be available from logs
-    temperature = 0.65    # Lower temperature for more deterministic code edits
+    GOAL = ""
+    # Hardcoded settings - ensure default file is in the correct directory
+    target_file = "data/output/code/generated_code.py" # Changed path and filename
+    model = "llama3.2-vision:11b" 
+    temperature = 0.65
     
     # Initialize editor
     editor = OllamaCodeEditor(
@@ -313,7 +314,9 @@ def main():
     
     # Empty file by default for wip_code.py
     if not os.path.exists(target_file):
-        print(printColoured(f"\nCreating empty {target_file} file...", "yellow"))
+        print(printColoured(f"\nEnsuring directory exists and creating empty {target_file} file...", "yellow"))
+        # Ensure the directory exists before writing
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
         with open(target_file, "w") as f:
             f.write("")
     
