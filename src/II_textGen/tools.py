@@ -5,7 +5,8 @@ import datetime
 import webbrowser
 import smtplib
 import subprocess
-from typing import Dict, List, Optional, Union, Any
+import logging # Import logging
+from typing import Dict, List, Optional, Union, Any, Literal
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
@@ -14,37 +15,48 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Define fallback classes for when imports fail
-class DummyAPI:
-    """Fallback class for when APIs aren't available"""
-    def __init__(self, *args, **kwargs):
-        pass
-    def __getattr__(self, name):
-        def dummy_method(*args, **kwargs):
-            return None
-        return dummy_method
+# Add the project root to the Python path to enable absolute imports
+# This makes imports work regardless of how the script is run (e.g., directly or from root)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-# Fix imports with absolute paths for Streamlit deployment
+# Setup initial logger for import errors
+initial_logger = logging.getLogger(__name__ + "_setup")
+initial_logger.addHandler(logging.StreamHandler()) # Ensure setup errors are visible
+initial_logger.setLevel(logging.INFO)
+
+# Now attempt the absolute imports
 try:
-    # Import with standard project structure (works in most environments including Streamlit)
     from src.I_integrations.web_crawling import WebCrawler
     from src.I_integrations.replicate_API import ReplicateAPI
-    from src.I_integrations.tripo_API import TripoAPI
-    from src.I_integrations.openai_API import OpenAIAPI
-except ImportError:
-    # Try relative imports as fallback
+    from src.I_integrations.openai_API import OpenAIWrapper
+    from src.I_integrations.news_API import News
+except ImportError as e:
+    initial_logger.error(f"Error during absolute import: {e}")
+    initial_logger.info("Attempting relative imports as a fallback...")
+    # Fallback to relative imports (might work in some structures, less reliable)
     try:
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        # Adjust path for relative imports if needed when running directly
+        if 'src' not in sys.path[0]: # Check if src/ path needs to be added
+             sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        
         from I_integrations.web_crawling import WebCrawler
-        from I_integrations.replicate_API import ReplicateAPI, download_file
-        from I_integrations.tripo_API import TripoAPI
-        from I_integrations.openai_API import OpenAIAPI
-    except ImportError:
-        # Fallback to dummy implementations
-        WebCrawler = DummyAPI
-        ReplicateAPI = DummyAPI
-        TripoAPI = DummyAPI
-        OpenAIAPI = DummyAPI
+        from I_integrations.replicate_API import ReplicateAPI
+        from I_integrations.openai_API import OpenAIWrapper
+        from I_integrations.news_API import News
+        initial_logger.info("Relative imports successful.")
+    except ImportError as final_e:
+        initial_logger.error(f"Error during relative import fallback: {final_e}")
+        raise ImportError("Failed to import required modules using both absolute and relative paths.") from final_e
+
+# Set up module-level logger
+logger = logging.getLogger(__name__)
+# Ensure the logger has a handler if not configured by the root logger
+# This prevents "No handlers could be found for logger..." messages
+if not logger.hasHandlers():
+    logger.addHandler(logging.StreamHandler()) # Add console handler
+    logger.setLevel(logging.INFO) # Default level if not set by calling module
 
 class Tools:
     """
@@ -59,7 +71,7 @@ class Tools:
             self.web_crawler = WebCrawler()
         except Exception as e:
             self.web_crawler = None
-            print(f"Warning: Failed to initialize web crawler: {e}")
+            logger.warning(f"Failed to initialize web crawler: {e}")
             
         # Initialize API clients with provided keys
         self.replicate = self._init_api(
@@ -69,25 +81,27 @@ class Tools:
         )
         
         self.openai = self._init_api(
-            OpenAIAPI, 
+            OpenAIWrapper, 
             "OpenAI",
             api_key=openai_api_key
         )
-        
-        # Initialize other APIs without keys
-        self.tripo = self._init_api(TripoAPI, "Tripo3D")
+        # Initialize News API client
+        self.news_client = self._init_api(News, "News Aggregator")
         
         # Check email credentials
         self.email_available = bool(os.getenv("EMAIL_USER") and os.getenv("EMAIL_PASS"))
         if not self.email_available:
-            print("Warning: Email credentials not found in environment variables.")
+            logger.warning("Email credentials not found in environment variables (EMAIL_USER, EMAIL_PASS).")
     
     def _init_api(self, api_class, api_name, **kwargs):
         """Helper to initialize API clients with error handling and optional API keys."""
         try:
-            return api_class(**kwargs)
+            # Pass specific keys if provided, otherwise rely on class defaults (env vars)
+            client = api_class(**kwargs)
+            logger.info(f"{api_name} API initialized successfully.")
+            return client
         except Exception as e:
-            print(f"Warning: Failed to initialize {api_name} API: {e}")
+            logger.warning(f"Failed to initialize {api_name} API: {e}")
             return None
     
     #################################
@@ -97,59 +111,95 @@ class Tools:
     def web_crawl(
         self,
         query: str,
-        sources: str = "both",
+        sources: Union[Literal["all"], Literal["ddg"], Literal["wiki"], Literal["exa"], List[str]] = "all",
+        num_results: int = 5,
         include_wiki_content: bool = False,
-        max_wiki_sections: int = 3,
-        max_results: int = 5
+        max_wiki_sentences: int = 5,
+        safe_search: str = "moderate",
+        exa_max_chars: int = 2000
     ) -> Dict[str, Any]:
         """
-        Search the web using DuckDuckGo and/or Wikipedia.
+        Perform comprehensive web research using selected sources (DuckDuckGo, Wikipedia, Exa).
         
         Args:
-            query: Search query
-            sources: Which sources to use ('ddg', 'wiki', or 'both')
-            include_wiki_content: Whether to include full Wikipedia content
-            max_wiki_sections: Maximum number of Wikipedia sections to include
-            max_results: Maximum number of search results to return
+            query: Research query string
+            sources: Sources to use - "all", "ddg", "wiki", "exa", or a list ["ddg", "wiki", "exa"]
+            num_results: Maximum results per source
+            include_wiki_content: Whether to include full Wikipedia article content
+            max_wiki_sentences: Maximum sentences in Wikipedia summary (if not full content)
+            safe_search: Safety level for DuckDuckGo search ('on', 'moderate', 'off')
+            exa_max_chars: Maximum characters to return per Exa result
             
         Returns:
-            Dictionary with search results
+            Dictionary with search results from requested sources and a merged context string.
         """
-        results = {}
-        
         if self.web_crawler is None:
+            logger.error("Web crawler not initialized.")
             return {"error": "Web crawler not available"}
         
         try:
-            if sources.lower() in ["ddg", "both"]:
-                try:
-                    ddg_results = self.web_crawler.search_ddg(query, max_results=max_results)
-                    results["ddg_results"] = ddg_results
-                except Exception as e:
-                    results["ddg_error"] = f"DuckDuckGo search failed: {str(e)}"
-                    print(f"DuckDuckGo search error (potentially rate limited): {e}")
+            logger.info(f"Performing web crawl for query='{query}' sources='{sources}' num_results={num_results}")
+            results = self.web_crawler.search_web(
+                query=query,
+                sources=sources,
+                num_results=num_results,
+                include_wiki_content=include_wiki_content,
+                max_wiki_sentences=max_wiki_sentences,
+                safe_search=safe_search,
+                exa_max_chars=exa_max_chars
+            )
             
-            if sources.lower() in ["wiki", "both"]:
-                try:
-                    wiki_data = self.web_crawler.search_wikipedia(
-                        query, 
-                        include_content=include_wiki_content,
-                        max_sections=max_wiki_sections
-                    )
-                    results["wiki_results"] = wiki_data
-                except Exception as e:
-                    results["wiki_error"] = f"Wikipedia search failed: {str(e)}"
-                    print(f"Wikipedia search error: {e}")
-            
-            # If we got no results but no errors were recorded, add a generic error
-            if not any(k for k in results.keys() if not k.endswith('_error')):
-                results["error"] = "No search results found"
-            
+            # The search_web method already returns the desired dictionary format
+            # including the merged context.
             return results
         
         except Exception as e:
-            print(f"Error during web search: {e}")
-            return {"error": f"Web search failed: {str(e)}"}
+            logger.error(f"Error during web crawl for query='{query}': {e}", exc_info=True)
+            return {"error": f"Web crawl failed: {str(e)}"}
+    
+    #################################
+    # NEWS FUNCTIONS
+    #################################
+    
+    def get_news(
+        self,
+        query: str,
+        max_results: int = 10,
+        from_date: Optional[Union[str, datetime]] = None,
+        to_date: Optional[Union[str, datetime]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetches and combines news articles from available sources based on a query.
+        
+        Args:
+            query: The search keyword or phrase.
+            max_results: Approximate total number of articles desired (default: 10).
+            from_date: Optional start date (YYYY-MM-DD or datetime object).
+            to_date: Optional end date (YYYY-MM-DD or datetime object).
+            
+        Returns:
+            List of normalized news articles, sorted by published date (newest first),
+            or a list containing an error dictionary if the client is unavailable or fails.
+        """
+        if self.news_client is None:
+            logger.error("News API client not initialized.")
+            return [{"error": "News API client not available"}]
+        
+        try:
+            logger.info(f"Fetching news with query='{query}', max_results={max_results}")
+            news_articles = self.news_client.get_news(
+                query=query,
+                max_results=max_results,
+                from_date=from_date,
+                to_date=to_date
+            )
+            logger.info(f"Found {len(news_articles)} news articles for query='{query}'")
+            return news_articles
+        
+        except Exception as e:
+            logger.error(f"Error fetching news for query='{query}': {e}", exc_info=True)
+            # Return the error message in the expected list format
+            return [{"error": f"Failed to fetch news: {str(e)}"}]
     
     #################################
     # MEDIA GENERATION FUNCTIONS
@@ -159,15 +209,14 @@ class Tools:
         self,
         prompt: str,
         save_path: Optional[str] = None,
-        safety_tolerance: int = 6  # Higher value = less strict
     ) -> str:
         """
-        Generate an image from a text prompt using Replicate's Flux model.
+        Generate an image from a text prompt using Replicate's model.
         
         Args:
             prompt: Text description of the desired image
             save_path: Optional path to save the image (will auto-generate if None)
-            safety_tolerance: Safety level (0 to 6, higher = less strict)
+
         
         Returns:
             str: Either:
@@ -175,16 +224,16 @@ class Tools:
             - URL to the generated image (if save failed)
             - Error message string if generation failed
         """
-        if self.replicate is None or isinstance(self.replicate, DummyAPI):
-            return "Error: Replicate API not available - imports failed"
+        if self.replicate is None:
+            logger.error("Replicate API not available for image generation.")
+            return "Error: Replicate API not available"
         
         try:
-            # Generate image using Flux
-            print(f"Generating image with Flux using prompt: '{prompt[:50]}{'...' if len(prompt) > 50 else ''}'")
+            logger.info(f"Generating image with prompt: '{prompt[:50]}...'")
             response = self.replicate.generate_image(
                 prompt=prompt,
                 aspect_ratio="1:1",  # Default square aspect ratio
-                safety_tolerance=safety_tolerance
+                model="flux-dev"
             )
             
             if not response:
@@ -204,8 +253,10 @@ class Tools:
             if not save_path:
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"image_{timestamp}.jpg"
-                os.makedirs("output/images", exist_ok=True)
-                save_path = os.path.join("output/images", filename)
+                # Ensure data/output/test_images exists relative to project root
+                save_dir = os.path.join(project_root, "data", "output", "test_images")
+                os.makedirs(save_dir, exist_ok=True)
+                save_path = os.path.join(save_dir, filename)
             else:
                 # Ensure the directory exists
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -214,14 +265,14 @@ class Tools:
             try:
                 from urllib.request import urlretrieve
                 urlretrieve(image_url, save_path)
-                print(f"Image saved to: {save_path}")
-                return save_path
+                logger.info(f"Image saved to: {save_path}")
+                return image_url
             except Exception as e:
-                print(f"Error saving image: {e}")
+                logger.warning(f"Error saving image to {save_path}: {e}")
                 return image_url
             
         except Exception as e:
-            print(f"Error generating image with Flux: {e}")
+            logger.error(f"Error generating image: {e}", exc_info=True)
             return f"Image generation failed: {str(e)}"
     
     def generate_music(
@@ -242,10 +293,11 @@ class Tools:
             Path to the saved music file or music URL if not saved
         """
         if not self.replicate:
+            logger.error("Replicate API not available for music generation.")
             return "Error: Replicate API not available"
         
         try:
-            # Generate music URL
+            logger.info(f"Generating music with prompt: '{prompt[:50]}...' duration: {duration}s")
             music_url = self.replicate.generate_music(
                 prompt=prompt,
                 duration=duration,
@@ -258,22 +310,21 @@ class Tools:
             # Download if save path provided
             if save_path:
                 try:
-                    # Try to use the function from the correctly imported module
-                    if hasattr(self.replicate, 'download_file'):
-                        downloaded_path = self.replicate.download_file(music_url, output_dir="music", filename=save_path)
-                    else:
-                        # Otherwise use the one from the module directly if available 
-                        from I_integrations.replicate_API import download_file
-                        downloaded_path = download_file(music_url, output_dir="music", filename=save_path)
-                    return downloaded_path or music_url
-                except ImportError:
-                    print("Warning: Could not import download_file function")
+                    # Ensure save dir exists relative to project root
+                    save_dir = os.path.join(project_root, "data", "output", "music")
+                    os.makedirs(save_dir, exist_ok=True)
+                    output_file_path = os.path.join(save_dir, os.path.basename(save_path))
+                    downloaded_path = self.replicate.download_file(music_url, output_dir=save_dir, filename=os.path.basename(save_path))
+                    logger.info(f"Music saved to: {downloaded_path}")
+                    return music_url
+                except Exception as e:
+                    logger.warning(f"Could not download music file: {e}")
                     return music_url
             
             return music_url
             
         except Exception as e:
-            print(f"Error generating music: {e}")
+            logger.error(f"Error generating music: {e}", exc_info=True)
             return f"Music generation failed: {str(e)}"
     
     def generate_video(
@@ -294,10 +345,11 @@ class Tools:
             Path to the saved video or video URL if not saved
         """
         if not self.replicate:
+            logger.error("Replicate API not available for video generation.")
             return "Error: Replicate API not available"
         
         try:
-            # Generate video URL
+            logger.info(f"Generating video from '{image_url}' with prompt: '{motion_prompt[:50]}...'")
             video_url = self.replicate.generate_video(
                 image_url=image_url,
                 prompt=motion_prompt,
@@ -309,14 +361,23 @@ class Tools:
                 
             # Download if save path provided
             if save_path:
-                from replicate_API import download_file
-                downloaded_path = download_file(video_url, output_dir="videos", filename=save_path)
-                return downloaded_path or video_url
+                try:
+                    if hasattr(self.replicate, 'download_file'):
+                        # Ensure save dir exists relative to project root
+                        save_dir = os.path.join(project_root, "data", "output", "videos")
+                        os.makedirs(save_dir, exist_ok=True)
+                        output_file_path = os.path.join(save_dir, os.path.basename(save_path))
+                        downloaded_path = self.replicate.download_file(video_url, output_dir=save_dir, filename=os.path.basename(save_path))
+                        logger.info(f"Video saved to: {downloaded_path}")
+                    else:
+                        logger.warning("download_file method not found on ReplicateAPI instance")
+                except Exception as e:
+                    logger.warning(f"Could not download video file: {e}")
+                return video_url
             
             return video_url
-            
         except Exception as e:
-            print(f"Error generating video: {e}")
+            logger.error(f"Error generating video: {e}", exc_info=True)
             return f"Video generation failed: {str(e)}"
     
     def generate_music_video(
@@ -335,10 +396,11 @@ class Tools:
             Path to the saved video with audio or error message
         """
         if not self.replicate:
+            logger.error("Replicate API not available for music video generation.")
             return "Error: Replicate API not available"
         
         try:
-            print("1. Generating image from prompt...")
+            logger.info(f"Music video step 1: Generating image for '{prompt[:30]}...'")
             image_url = self.generate_image(prompt)
             if not image_url or image_url.startswith("Error") or image_url.startswith("Failed"):
                 return f"Failed at image generation step: {image_url}"
@@ -347,83 +409,151 @@ class Tools:
             video_prompt = f"Camera slowly exploring {prompt}, with smooth movement"
             music_prompt = f"Soundtrack for {prompt}, emotionally fitting the visual scene"
             
-            print("2. Generating video from image...")
+            logger.info("Music video step 2: Generating video...")
             video_url = self.generate_video(image_url, video_prompt)
             if not video_url or video_url.startswith("Error") or video_url.startswith("Failed"):
                 return f"Failed at video generation step: {video_url}"
                 
-            print("3. Generating music for video...")
-            music_url = self.generate_music(music_prompt, duration=5)  # Short duration for demo
+            logger.info("Music video step 3: Generating music...")
+            music_url = self.generate_music(music_prompt, duration=5)
             if not music_url or music_url.startswith("Error") or music_url.startswith("Failed"):
                 return f"Failed at music generation step: {music_url}"
             
             # Download files
-            from replicate_API import download_file, merge_video_audio
+            if not hasattr(self.replicate, 'download_file') or not hasattr(self.replicate, 'merge_video_audio'):
+                logger.error("Required methods (download_file, merge_video_audio) not found.")
+                return "Error: Required methods not found."
             
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            video_path = download_file(video_url, output_dir="videos", filename=f"{save_path or 'music_video'}_video_{timestamp}.mp4")
-            music_path = download_file(music_url, output_dir="music", filename=f"{save_path or 'music_video'}_audio_{timestamp}.mp3")
+            base_name = save_path or 'music_video'
+            # Define paths within project structure
+            video_dir = os.path.join(project_root, "data", "output", "videos")
+            music_dir = os.path.join(project_root, "data", "output", "music")
+            merged_dir = os.path.join(project_root, "data", "output", "videos") # Save merged in videos
+            
+            os.makedirs(video_dir, exist_ok=True)
+            os.makedirs(music_dir, exist_ok=True)
+            os.makedirs(merged_dir, exist_ok=True)
+
+            logger.info("Music video step 3b: Downloading video and audio...")
+            video_filename = f"{base_name}_video_{timestamp}.mp4"
+            music_filename = f"{base_name}_audio_{timestamp}.mp3"
+            merged_filename = f"{base_name}_merged_{timestamp}.mp4"
+            
+            video_path = self.replicate.download_file(video_url, output_dir=video_dir, filename=video_filename)
+            music_path = self.replicate.download_file(music_url, output_dir=music_dir, filename=music_filename)
             
             if not video_path or not music_path:
-                return f"Failed to download generated files. Video URL: {video_url}, Music URL: {music_url}"
+                logger.error(f"Failed to download files. Video URL: {video_url}, Music URL: {music_url}")
+                return f"Failed to download files. Video: {video_url}, Music: {music_url}"
             
             # Merge video and audio
-            print("4. Merging video and audio...")
-            merged_filename = f"{save_path or 'music_video'}_merged_{timestamp}.mp4"
-            merged_path = merge_video_audio(video_path, music_path, filename=merged_filename)
+            logger.info("Music video step 4: Merging video and audio...")
+            merged_path = self.replicate.merge_video_audio(video_path, music_path, output_dir=merged_dir, filename=merged_filename)
             
             if merged_path:
+                logger.info(f"Music video merged successfully: {merged_path}")
                 return merged_path
             else:
+                logger.error("Music video merge failed.")
                 return f"Video: {video_path}, Music: {music_path} (Merge failed)"
             
         except Exception as e:
-            print(f"Error generating music video: {e}")
+            logger.error(f"Error generating music video: {e}", exc_info=True)
             return f"Music video generation failed: {str(e)}"
     
     def generate_threed(
         self,
-        prompt: Optional[str] = None, 
-        image_url: Optional[str] = None,
-        save_path: Optional[str] = None
+        image_url: str,
+        save_path: Optional[str] = None,
     ) -> str:
         """
-        Generate 3D model from text or image using Tripo3D API.
+        Generate 3D model from an image using Replicate's Trellis model.
+        Saves the model locally if save_path is provided, but returns the model URL.
         
         Args:
-            prompt: Text description for text-to-3D (required if no image_url)
-            image_url: URL to image for image-to-3D (required if no prompt)
-            save_path: Optional path to save the 3D model
+            image_url: URL or local path to the source image.
+            # prompt: Optional textual description (currently unused by Trellis).
+            save_path: Optional path to save the 3D model (.glb).
+            # remove_background: Whether to attempt background removal from the source image.
+            # seed: Optional random seed for reproducibility.
             
         Returns:
-            Path to the saved 3D model or error message
+            URL of the generated 3D model, or an error message string.
         """
-        if not self.tripo:
-            return "Error: Tripo3D API not available"
+        if not self.replicate:
+            logger.error("Replicate API not available for 3D generation.")
+            return "Error: Replicate API not available"
             
-        if not prompt and not image_url:
-            return "Error: Either prompt or image_url must be provided"
+        if not image_url:
+            logger.error("Image URL or path is required for 3D generation.")
+            return "Error: Image URL or path is required."
         
         try:
-            import asyncio
+            # --- Prepare Image Input ---
+            # Check if image_url is a local path and needs uploading
+            prepared_image_url = image_url # Assume it's a URL initially
+            if os.path.exists(image_url):
+                logger.info(f"Local image path detected: {image_url}. Preparing...")
+                # Use the upload functionality within replicate_API if available
+                if hasattr(self.replicate, 'prepare_image_input'):
+                     prepared_image_url = self.replicate.prepare_image_input(image_url)
+                     if not prepared_image_url or not isinstance(prepared_image_url, str):
+                         logger.error(f"Failed to prepare/upload local image: {image_url}")
+                         return f"Error: Failed to prepare/upload local image: {image_url}"
+                     logger.info(f"Image prepared: {prepared_image_url}")
+                else:
+                    logger.error("ReplicateAPI instance missing prepare_image_input method.")
+                    return "Error: ReplicateAPI instance missing prepare_image_input method."
+            elif not isinstance(image_url, str) or not image_url.startswith(('http', 'https')):
+                 logger.error(f"Invalid image_url provided: {image_url}")
+                 return f"Error: Invalid image_url provided: {image_url}"
             
-            # Set output path if not provided
-            if not save_path:
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                model_name = "threed_" + timestamp + ".glb"
-                save_dir = os.path.join("output", "threed")
+            # --- Generate 3D Model URL ---
+            logger.info(f"Generating 3D model from image: {prepared_image_url}...")
+            threed_url = self.replicate.generate_threed(
+                image_url=prepared_image_url,
+                model="trellis"
+                )
+            
+            if not threed_url:
+                raise Exception("Replicate returned empty result for 3D generation")
+
+            # Ensure threed_url is a string URL
+            if not isinstance(threed_url, str):
+                 # Handle cases where the output might be a dict or FileOutput object
+                 if hasattr(threed_url, 'url'):
+                     threed_url = threed_url.url
+                 elif isinstance(threed_url, dict) and 'mesh' in threed_url:
+                     mesh_output = threed_url['mesh']
+                     threed_url = mesh_output.url if hasattr(mesh_output, 'url') else str(mesh_output)
+                 else:
+                     threed_url = str(threed_url) # Fallback conversion
+            
+            if not threed_url or not threed_url.startswith('http'):
+                raise ValueError(f"Invalid URL: {threed_url}")
+
+            # --- Download Locally (if requested) ---
+            if save_path:
+                # Ensure save dir exists relative to project root
+                save_dir = os.path.join(project_root, "data", "output", "threed_models")
                 os.makedirs(save_dir, exist_ok=True)
-                save_path = os.path.join(save_dir, model_name)
+                output_file_path = os.path.join(save_dir, os.path.basename(save_path))
+                logger.info(f"Downloading 3D model to: {output_file_path}")
+                if hasattr(self.replicate, 'download_file'):
+                    downloaded_path = self.replicate.download_file(threed_url, output_dir=save_dir, filename=os.path.basename(save_path))
+                    if downloaded_path:
+                        logger.info(f"3D Model saved locally to: {downloaded_path}")
+                    else:
+                        logger.warning(f"Failed to download 3D model locally to {output_file_path}")
+                else:
+                    logger.warning("download_file method not available. Cannot save locally.")
             
-            # Run the async generation in a new event loop
-            return asyncio.run(self.tripo.generate_threed(
-                prompt=prompt,
-                image_url=image_url,
-                output_path=save_path
-            ))
+            # --- Return the URL --- 
+            return threed_url
             
         except Exception as e:
-            print(f"Error generating 3D model: {e}")
+            logger.error(f"Error generating 3D model: {e}", exc_info=True)
             return f"3D model generation failed: {str(e)}"
     
     #################################
@@ -464,10 +594,11 @@ class Tools:
             True if successful, False otherwise
         """
         try:
+            logger.info(f"Opening URL in browser: {url}")
             webbrowser.open(url)
             return True
         except Exception as e:
-            print(f"Error opening URL: {e}")
+            logger.warning(f"Error opening URL {url}: {e}")
             return False
     
     def send_email(
@@ -492,13 +623,17 @@ class Tools:
             True if successful, False otherwise
         """
         if not self.email_available:
-            print("Email credentials not configured in environment variables")
+            logger.warning("Attempted send_email, but credentials not configured.")
             return False
         
         try:
             # Get credentials from environment
             email_user = sender or os.getenv("EMAIL_USER")
             email_pass = os.getenv("EMAIL_PASS")
+            
+            if not email_user or not email_pass:
+                logger.error("Email credentials missing even after check.")
+                return False
             
             # Create message
             msg = MIMEMultipart()
@@ -511,16 +646,17 @@ class Tools:
             msg.attach(MIMEText(body, content_type))
             
             # Setup and send email
+            logger.info(f"Sending email to {recipient} with subject: {subject}")
             server = smtplib.SMTP("smtp.gmail.com", 587)
             server.starttls()
             server.login(email_user, email_pass)
             server.send_message(msg)
             server.quit()
-            
+            logger.info(f"Email sent successfully to {recipient}")
             return True
             
         except Exception as e:
-            print(f"Error sending email: {e}")
+            logger.error(f"Error sending email to {recipient}: {e}", exc_info=True)
             return False
 
     #################################
@@ -543,14 +679,15 @@ class Tools:
             Dictionary with weather information
         """
         try:
-            # Lazy import to avoid circular dependencies
-            from openweather_API import OpenWeatherAPI
+            # Import from I_integrations package
+            from I_integrations.openweather_API import OpenWeatherAPI
             
             # Initialize API if needed
             if not hasattr(self, "weather_api"):
                 self.weather_api = OpenWeatherAPI()
             
             # Get current weather
+            logger.info(f"Getting current weather for {location} (units: {units})")
             weather_data = self.weather_api.get_current_weather(location, units=units)
             
             # Format the result
@@ -564,20 +701,24 @@ class Tools:
                     "humidity": weather_data["main"].get("humidity"),
                     "pressure": weather_data["main"].get("pressure"),
                     "wind_speed": weather_data.get("wind", {}).get("speed"),
-                    "description": weather_data["weather"][0].get("description") if weather_data["weather"] else "",
-                    "condition": weather_data["weather"][0].get("main") if weather_data["weather"] else "",
-                    "icon": weather_data["weather"][0].get("icon") if weather_data["weather"] else "",
+                    "description": weather_data["weather"][0].get("description", ""),
+                    "condition": weather_data["weather"][0].get("main", ""),
+                    "icon": weather_data["weather"][0].get("icon", ""),
                     "units": units,
                     "timestamp": weather_data.get("dt"),
                     "timezone": weather_data.get("timezone"),
-                    "raw_data": weather_data  # Include raw data for advanced usage
+                    # "raw_data": weather_data
                 }
                 return formatted_result
             else:
+                logger.warning(f"Weather data format unexpected for {location}: {weather_data}")
                 return {"error": "Weather data not available", "raw_data": weather_data}
             
+        except ModuleNotFoundError:
+            logger.error("OpenWeatherAPI module not found in I_integrations.")
+            return {"error": "Weather functionality unavailable due to missing module."}
         except Exception as e:
-            print(f"Error getting weather: {e}")
+            logger.error(f"Error getting weather for {location}: {e}", exc_info=True)
             return {"error": f"Weather retrieval failed: {str(e)}"}
 
     def get_forecast(
@@ -598,14 +739,15 @@ class Tools:
             Dictionary with forecast information
         """
         try:
-            # Lazy import to avoid circular dependencies
-            from openweather_API import OpenWeatherAPI
+            # Import from I_integrations package
+            from I_integrations.openweather_API import OpenWeatherAPI
             
             # Initialize API if needed
             if not hasattr(self, "weather_api"):
                 self.weather_api = OpenWeatherAPI()
             
             # Get forecast
+            logger.info(f"Getting {days}-day forecast for {location} (units: {units})")
             forecast_data = self.weather_api.get_forecast(location, units=units, days=days)
             
             # Format the result
@@ -631,9 +773,9 @@ class Tools:
                             "temperature": entry.get("main", {}).get("temp"),
                             "feels_like": entry.get("main", {}).get("feels_like"),
                             "humidity": entry.get("main", {}).get("humidity"),
-                            "description": entry.get("weather", [{}])[0].get("description") if entry.get("weather") else "",
-                            "condition": entry.get("weather", [{}])[0].get("main") if entry.get("weather") else "",
-                            "icon": entry.get("weather", [{}])[0].get("icon") if entry.get("weather") else "",
+                            "description": entry.get("weather", [{}])[0].get("description", ""),
+                            "condition": entry.get("weather", [{}])[0].get("main", ""),
+                            "icon": entry.get("weather", [{}])[0].get("icon", ""),
                             "wind_speed": entry.get("wind", {}).get("speed"),
                         }
                         
@@ -645,13 +787,17 @@ class Tools:
                     "timezone": city_info.get("timezone"),
                     "days": days_forecast,
                     "units": units,
-                    "raw_data": forecast_data  # Include raw data for advanced usage
+                    # "raw_data": forecast_data
                 }
             else:
+                logger.warning(f"Forecast data format unexpected for {location}: {forecast_data}")
                 return {"error": "Forecast data not available", "raw_data": forecast_data}
             
+        except ModuleNotFoundError:
+            logger.error("OpenWeatherAPI module not found in I_integrations.")
+            return {"error": "Weather functionality unavailable due to missing module."}
         except Exception as e:
-            print(f"Error getting forecast: {e}")
+            logger.error(f"Error getting forecast for {location}: {e}", exc_info=True)
             return {"error": f"Forecast retrieval failed: {str(e)}"}
 
     def text_to_speech(
@@ -674,26 +820,39 @@ class Tools:
             Path to the saved audio file
         """
         if not self.openai:
+            logger.error("OpenAI API not available for text-to-speech.")
             return "Error: OpenAI API not available"
         
         # Validate voice parameter against OpenAI's allowed voices
         allowed_voices = ["alloy", "echo", "fable", "onyx", "nova", "shimmer", "ash", "sage", "coral"]
         if voice not in allowed_voices:
-            print(f"Warning: '{voice}' is not a valid OpenAI voice. Using 'alloy' instead.")
+            logger.warning(f"'{voice}' is not a valid OpenAI voice. Using 'alloy' instead.")
             voice = "alloy"
         
         try:
             # Call OpenAI's text-to-speech API
+            logger.info(f"Generating speech for text: '{text[:50]}...' voice: {voice} speed: {speed}")
+            # Determine save path relative to project root
+            if not output_path:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"speech_{timestamp}.mp3"
+                save_dir = os.path.join(project_root, "data", "output", "audio")
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, filename)
+            else:
+                # Ensure directory exists if a full path is provided
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
             audio_path = self.openai.text_to_speech(
                 text=text,
                 voice=voice,
                 output_path=output_path,
                 speed=speed
             )
-            
+            logger.info(f"Text-to-speech generated and saved to: {audio_path}")
             return audio_path
         except Exception as e:
-            print(f"Error generating speech: {e}")
+            logger.error(f"Error generating speech: {e}", exc_info=True)
             return f"Speech generation failed: {str(e)}"
 
     def transcribe_speech(
@@ -714,25 +873,33 @@ class Tools:
             Dictionary with transcription text and metadata
         """
         if not self.openai:
+            logger.error("OpenAI API not available for speech transcription.")
             return {"error": "OpenAI API not available"}
+        
+        if not os.path.exists(audio_file):
+            logger.error(f"Audio file not found for transcription: {audio_file}")
+            return {"error": f"Audio file not found: {audio_file}"}
         
         try:
             # Call OpenAI's transcription API
+            logger.info(f"Transcribing audio file: {audio_file} Language: {language or 'auto'}")
             result = self.openai.transcribe_audio(
                 audio_file=audio_file,
                 language=language,
                 prompt=prompt
             )
-            
+            logger.info(f"Transcription successful for {audio_file}. Text length: {len(result.get('text', ''))}")
             return result
         except Exception as e:
-            print(f"Error transcribing speech: {e}")
+            logger.error(f"Error transcribing speech for file {audio_file}: {e}", exc_info=True)
             return {"error": f"Transcription failed: {str(e)}"}
 
 
 # Example usage
 if __name__ == "__main__":
-    print("\n===== TOOLS DEMO =====\n")
+    # Configure root logger for demo purposes if needed
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger.info("\n===== TOOLS DEMO (using logging) =====\n")
     tools = Tools()
     
     # Function to prompt for input with default value
@@ -744,7 +911,7 @@ if __name__ == "__main__":
     while True:
         print("\nAvailable Tools:")
         print("1. Web Search")
-        print("2. Wikipedia")
+        print("2. News Search")
         print("3. Generate Image")
         print("4. Generate Music")
         print("5. Generate Video (from image URL)")
@@ -767,29 +934,73 @@ if __name__ == "__main__":
             
         elif choice == "1":
             query = prompt("Enter search query", "AI advancements")
-            results = tools.web_crawl(query, sources="ddg")
-            print("\nSearch Results:")
+            sources_options = "all (All Sources), ddg (DuckDuckGo), wiki (Wikipedia), exa (Exa)"
+            sources = prompt(f"Select sources [{sources_options}]", "all")
+            num_results = int(prompt("Number of results per source", "5"))
+            include_wiki_content = prompt("Include full Wikipedia content? (y/n)", "n").lower() == "y"
+            
+            print(f"\nSearching the web for: '{query}' using {sources}")
+            results = tools.web_crawl(
+                query=query, 
+                sources=sources,
+                num_results=num_results,
+                include_wiki_content=include_wiki_content
+            )
+            
+            # Display search results
+            print(f"\nSources used: {', '.join(results.get('sources_used', []))}")
+            
+            # Display Wikipedia results if available
+            if "wiki_results" in results:
+                wiki_data = results["wiki_results"]
+                print(f"\nWikipedia: {wiki_data.get('title', '')}")
+                print(f"Summary: {wiki_data.get('summary', '')[:300]}...")
+                if include_wiki_content and "content" in wiki_data:
+                    print(f"Content preview: {wiki_data.get('content', '')[:300]}...")
+            
+            # Display DuckDuckGo results if available
             if "ddg_results" in results:
+                print("\nDuckDuckGo Results:")
                 for i, result in enumerate(results["ddg_results"][:3], 1):
                     print(f"\n{i}. {result.get('title', '')}")
                     print(f"   URL: {result.get('link', '')}")
                     print(f"   {result.get('snippet', '')[:100]}...")
-            else:
-                print("No results found")
+            
+            # Display Exa results if available
+            if "exa_results" in results:
+                print("\nExa Results:")
+                for i, result in enumerate(results["exa_results"][:3], 1):
+                    print(f"\n{i}. {result.get('title', '')}")
+                    print(f"   URL: {result.get('url', '')}")
+                    if result.get('text'):
+                        print(f"   {result.get('text', '')[:100]}...")
                 
         elif choice == "2":
-            query = prompt("Enter Wikipedia search query", "Machine learning")
-            get_content = prompt("Get full content? (y/n)", "n").lower() == "y"
-            result = tools.web_crawl(query, sources="wiki", include_wiki_content=get_content)
+            query = prompt("Enter news search query", "latest technology")
+            max_results = int(prompt("Maximum number of articles", "5"))
+            from_date = prompt("From date (YYYY-MM-DD, optional)", "")
+            to_date = prompt("To date (YYYY-MM-DD, optional)", "")
             
-            if "wiki_results" in result:
-                wiki_data = result["wiki_results"]
-                print(f"\nWikipedia: {wiki_data.get('title', '')}")
-                print(f"\nSummary: {wiki_data.get('summary', '')[:300]}...")
-                if get_content and "content" in wiki_data:
-                    print(f"\nContent preview: {wiki_data.get('content', '')[:300]}...")
+            print(f"\nSearching news for: {query}...")
+            news_results = tools.get_news(
+                query=query, 
+                max_results=max_results,
+                from_date=from_date if from_date else None,
+                to_date=to_date if to_date else None
+            )
+            
+            if news_results and "error" not in news_results[0]:
+                print(f"\nFound {len(news_results)} news articles:")
+                for i, article in enumerate(news_results, 1):
+                    print(f"\n{i}. {article.get('title', 'No title')}")
+                    print(f"   Source: {article.get('source', 'Unknown')}")
+                    print(f"   Date: {article.get('published_at', 'Unknown date')}")
+                    print(f"   URL: {article.get('url', 'No URL')}")
+                    if article.get('description'):
+                        print(f"   {article.get('description', '')[:150]}...")
             else:
-                print("No Wikipedia results found")
+                error_msg = news_results[0].get('error', 'Unknown error') if news_results else "No results"
+                print(f"Error: {error_msg}")
                 
         elif choice == "3":
             prompt_text = prompt("Enter image description", "A serene landscape with mountains and a lake at sunset")
@@ -822,12 +1033,12 @@ if __name__ == "__main__":
             
         elif choice == "5":
             image_url = prompt("Enter image URL", "")
-            motion = prompt("Enter motion description", "Camera slowly panning around the scene, revealing details")
+            motion_prompt = prompt("Enter motion description", "Camera slowly panning around the scene, revealing details")
             if not image_url:
                 print("Image URL is required for video generation.")
                 continue
             print("\nGenerating video, please wait...")
-            result = tools.generate_video(image_url, motion)
+            result = tools.generate_video(image_url, motion_prompt)
             print(f"Result: {result}")
             
         elif choice == "6":
@@ -837,21 +1048,24 @@ if __name__ == "__main__":
             print(f"Result: {result}")
             
         elif choice == "7":
-            prompt_type = prompt("Generate from text or image? (text/image)", "text").lower()
-            
-            if prompt_type.startswith("t"):
-                prompt_text = prompt("Enter 3D model description", "A futuristic spacecraft with sleek design")
-                print("\nGenerating 3D model from text, please wait...")
-                result = tools.generate_threed(prompt=prompt_text)
-            else:
-                image_url = prompt("Enter image URL", "")
-                if not image_url:
-                    print("Image URL is required for image-to-3D generation.")
-                    continue
-                print("\nGenerating 3D model from image, please wait...")
-                result = tools.generate_threed(image_url=image_url)
+            # Now uses Replicate Trellis (Image-to-3D only)
+            image_url = prompt("Enter image URL or local path", "")
+            if not image_url:
+                print("Image URL or path is required for 3D generation.")
+                continue
                 
-            print(f"Result: {result}")
+            save_path_input = prompt("Enter local save path (optional, e.g., output/threed/my_model.glb)", "")
+                
+            print("\nGenerating 3D model from image using Replicate Trellis, please wait...")
+            # Call the simplified tools.py function
+            result = tools.generate_threed(
+                image_url=image_url,
+                save_path=save_path_input if save_path_input else None
+            )
+                
+            print(f"Result (URL): {result}")
+            if save_path_input:
+                 print(f"(Attempted to save locally to {save_path_input})")
             
         elif choice == "8":
             format_type = prompt("Format (iso/human/date/time)", "human")
@@ -860,8 +1074,11 @@ if __name__ == "__main__":
             
         elif choice == "9":
             url = prompt("Enter URL to open", "https://www.google.com")
-            tools.open_url_in_browser(url)
-            print(f"Opening {url} in browser...")
+            result = tools.open_url_in_browser(url)
+            if result:
+                print(f"Successfully opened {url} in browser.")
+            else:
+                print(f"Failed to open {url} in browser.")
             
         elif choice == "10":
             if not tools.email_available:
@@ -871,13 +1088,14 @@ if __name__ == "__main__":
             recipient = prompt("Enter recipient email")
             subject = prompt("Enter subject", "Test email from Tools")
             body = prompt("Enter message", "This is a test email sent from the Tools module.")
+            html_format = prompt("Send as HTML? (y/n)", "n").lower() == "y"
             
             if not recipient:
                 print("Recipient email is required.")
                 continue
                 
             print("\nSending email...")
-            result = tools.send_email(recipient, subject, body)
+            result = tools.send_email(recipient, subject, body, html=html_format)
             if result:
                 print("Email sent successfully!")
             else:
@@ -886,65 +1104,48 @@ if __name__ == "__main__":
         elif choice == "11":
             location = prompt("Enter location (e.g., 'London,UK', 'New York,US')", "London,UK")
             units = prompt("Units (metric/imperial)", "metric")
-            forecast = prompt("Get forecast? (y/n)", "n").lower() == "y"
+            print(f"\nGetting current weather for {location}...")
+            result = tools.get_weather(location, units=units)
             
-            if forecast:
-                days = int(prompt("Number of forecast days (1-5)", "3"))
-                print(f"\nGetting {days}-day forecast for {location}...")
-                result = tools.get_forecast(location, days=days, units=units)
+            if "error" not in result:
+                temp_unit = "C" if units == "metric" else "F"
+                speed_unit = "m/s" if units == "metric" else "mph"
                 
-                if "error" not in result:
-                    print(f"\nForecast for {result.get('location')}, {result.get('country')}:")
-                    for date, entries in result.get("days", {}).items():
-                        print(f"\n{date}:")
-                        for entry in entries[:3]:  # Show first 3 time slots per day
-                            print(f"  {entry.get('time')}: {entry.get('temperature')}°{' C' if units=='metric' else ' F'}, {entry.get('description')}")
-                        if len(entries) > 3:
-                            print(f"  ... and {len(entries) - 3} more time slots")
-                else:
-                    print(f"Error: {result.get('error')}")
+                print(f"\nCurrent weather for {result.get('location')}, {result.get('country')}:")
+                print(f"Temperature: {result.get('temperature')}°{temp_unit}")
+                print(f"Feels like: {result.get('feels_like')}°{temp_unit}")
+                print(f"Condition: {result.get('description')}")
+                print(f"Humidity: {result.get('humidity')}%")
+                print(f"Wind speed: {result.get('wind_speed')} {speed_unit}")
             else:
-                print(f"\nGetting current weather for {location}...")
-                result = tools.get_weather(location, units=units)
-                
-                if "error" not in result:
-                    temp_unit = "C" if units == "metric" else "F"
-                    speed_unit = "m/s" if units == "metric" else "mph"
-                    
-                    print(f"\nCurrent weather for {result.get('location')}, {result.get('country')}:")
-                    print(f"Temperature: {result.get('temperature')}°{temp_unit}")
-                    print(f"Feels like: {result.get('feels_like')}°{temp_unit}")
-                    print(f"Condition: {result.get('description')}")
-                    print(f"Humidity: {result.get('humidity')}%")
-                    print(f"Wind speed: {result.get('wind_speed')} {speed_unit}")
-                else:
-                    print(f"Error: {result.get('error')}")
+                print(f"Error: {result.get('error')}")
                 
         elif choice == "12":
             location = prompt("Enter location", "London,UK")
             days = int(prompt("Enter number of days for forecast", "5"))
-            units = prompt("Enter units (metric/imperial)", "metric")
-            result = tools.get_forecast(location, days, units)
-            if "error" in result:
-                print(f"Error: {result['error']}")
+            units = prompt("Units (metric/imperial)", "metric")
+            print(f"\nGetting {days}-day forecast for {location}...")
+            result = tools.get_forecast(location, days=days, units=units)
+            
+            if "error" not in result:
+                print(f"\nForecast for {result.get('location')}, {result.get('country')}:")
+                for date, entries in result.get("days", {}).items():
+                    print(f"\n{date}:")
+                    for entry in entries[:3]:  # Show first 3 time slots per day
+                        print(f"  {entry.get('time')}: {entry.get('temperature')}°{' C' if units=='metric' else ' F'}, {entry.get('description')}")
+                    if len(entries) > 3:
+                        print(f"  ... and {len(entries) - 3} more time slots")
             else:
-                print("\nForecast Information:")
-                for key, value in result.items():
-                    if key != "raw_data":
-                        print(f"{key.capitalize()}:")
-                        if isinstance(value, dict):
-                            for subkey, subvalue in value.items():
-                                print(f"  {subkey.capitalize()}: {subvalue}")
-                        else:
-                            print(f"  {value}")
+                print(f"Error: {result.get('error')}")
                 
         elif choice == "13":
             text = prompt("Enter text to convert to speech", "Welcome to the demo of our text to speech capability.")
-            voice = prompt("Choose voice (alloy, echo, fable, onyx, nova, shimmer)", "alloy")
+            voice = prompt("Choose voice (alloy, echo, fable, onyx, nova, shimmer, ash, sage, coral)", "alloy")
             output_path = prompt("Enter output file name (optional)", "demo_speech.mp3")
+            speed = float(prompt("Speech speed (0.25 to 4.0)", "1.0"))
             
             print("\nGenerating speech...")
-            result = tools.text_to_speech(text, voice, output_path)
+            result = tools.text_to_speech(text, voice, output_path, speed=speed)
             print(f"Speech generated and saved to: {result}")
             
         elif choice == "14":
@@ -973,4 +1174,4 @@ if __name__ == "__main__":
         
         input("\nPress Enter to continue...")
     
-    print("\n===== DEMO COMPLETE =====") 
+    logger.info("\n===== DEMO COMPLETE ======") 

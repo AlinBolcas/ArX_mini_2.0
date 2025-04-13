@@ -10,21 +10,42 @@ import logging
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("faiss").setLevel(logging.WARNING)
 
+# Get logger for this module
+logger = logging.getLogger(__name__)
+
 # Import without printing warnings
 try:
     import faiss
 except ImportError:
-    print("Warning: FAISS not installed. Vector search functionality will be limited.")
+    logger.warning("FAISS not installed. Vector search functionality will be limited.")
     faiss = None
 
-# Ensure we can easily import our OpenAI wrapper
+# --- LLM Provider Configuration ---
+# Change this to "openai" to use OpenAIWrapper
+LLM_PROVIDER = "ollama" 
+# --- End Configuration ---
+
+# Add paths for importing other modules
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "I_integrations")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Load the chosen LLM API wrapper
+LLMAPIWrapper = None
+
 try:
-    from openai_API import OpenAIAPI
-except ImportError:
-    print("Warning: Could not import OpenAIAPI. Make sure openai_API.py is in the I_integrations directory.")
-    OpenAIAPI = None
+    if LLM_PROVIDER == "ollama":
+        from I_integrations.ollama_API import OllamaWrapper
+        LLMAPIWrapper = OllamaWrapper
+        logger.info("Selected LLM Provider: Ollama")
+    elif LLM_PROVIDER == "openai":
+        from I_integrations.openai_API import OpenAIWrapper
+        LLMAPIWrapper = OpenAIWrapper
+        logger.info("Selected LLM Provider: OpenAI")
+    else:
+        logger.warning(f"Unknown LLM_PROVIDER '{LLM_PROVIDER}'. No LLM API wrapper loaded.")
+except ImportError as e:
+    logger.warning(f"Could not import {LLM_PROVIDER.upper()} API: {e}")
+    LLMAPIWrapper = None # Ensure it's None if import fails
 
 @dataclass
 class TextChunk:
@@ -221,12 +242,12 @@ class TextSplitter:
 class RAG:
     """
     Retrieval-Augmented Generation system with FAISS vector search.
-    Integrates with OpenAI API for embeddings and completions.
+    Integrates with LLM API for embeddings and completions.
     """
     
     def __init__(
         self, 
-        openai_api: Optional[Any] = None,
+        llm_api: Optional[Any] = None,
         chunk_size: int = 1000, 
         chunk_overlap: int = 200,
         use_semantic_splitting: bool = True
@@ -235,19 +256,29 @@ class RAG:
         Initialize the RAG system.
         
         Args:
-            openai_api: An instance of OpenAIAPI (will create one if None)
+            llm_api: An instance of LLM API wrapper (OllamaWrapper or OpenAIWrapper)
             chunk_size: Maximum size of each text chunk
             chunk_overlap: Number of characters to overlap between chunks
             use_semantic_splitting: Whether to use semantic-aware text splitting
         """
-        # Initialize OpenAI API if not provided
-        if openai_api is None:
-            if OpenAIAPI is not None:
-                self.openai = OpenAIAPI()
+        # Initialize LLM API if not provided
+        if llm_api is None:
+            # This assumes LLMAPIWrapper is imported at the top level based on choice
+            if LLMAPIWrapper is not None:
+                try:
+                    # Attempt to initialize the chosen wrapper
+                    # Add specific init args if needed, e.g., auto_pull for Ollama
+                    if LLM_PROVIDER == "ollama":
+                        self.llm_api = LLMAPIWrapper(auto_pull=True)
+                    else:
+                         self.llm_api = LLMAPIWrapper()
+                    logger.info(f"Initialized default {LLM_PROVIDER} API wrapper.")
+                except Exception as e:
+                     raise ImportError(f"Failed to auto-initialize {LLM_PROVIDER} API: {e}. Ensure it's configured correctly.")
             else:
-                raise ImportError("OpenAIAPI not available and no API instance provided")
+                raise ImportError(f"{LLM_PROVIDER.upper()} API module is required but could not be imported or initialized.")
         else:
-            self.openai = openai_api
+            self.llm_api = llm_api
             
         self.splitter = TextSplitter(chunk_size, chunk_overlap)
         self.use_semantic = use_semantic_splitting
@@ -257,14 +288,14 @@ class RAG:
         self.chunks = []
         self.embedding_dimension = None
         
-    def add_documents(
+    def index_context(
         self,
         documents: Union[str, List[str]],
         document_ids: Optional[List[str]] = None,
         metadata: Optional[List[Dict]] = None
     ) -> List[TextChunk]:
         """
-        Process documents into chunks and add to the vector store.
+        Process documents into chunks, create embeddings, and add to the vector store index.
         
         Args:
             documents: Text document(s) to process
@@ -304,12 +335,16 @@ class RAG:
             
         # Create embeddings for all chunks
         chunk_texts = [chunk.text for chunk in all_chunks]
-        chunk_embeddings = self.openai.create_embeddings(chunk_texts)
+        chunk_embeddings = self.llm_api.create_embeddings(chunk_texts)
         
         # Initialize FAISS index if needed
         if self.index is None:
             self.embedding_dimension = chunk_embeddings.shape[1]
-            self.index = faiss.IndexFlatL2(self.embedding_dimension)
+            # Use IndexFlatIP for cosine similarity
+            self.index = faiss.IndexFlatIP(self.embedding_dimension)
+        
+        # Normalize embeddings before adding for cosine similarity
+        chunk_embeddings = chunk_embeddings / np.linalg.norm(chunk_embeddings, axis=1, keepdims=True)
         
         # Add embeddings to index
         self.index.add(chunk_embeddings)
@@ -319,7 +354,7 @@ class RAG:
         
         return all_chunks
     
-    def search(
+    def search_index(
         self,
         query: str,
         k: int = 3
@@ -338,23 +373,28 @@ class RAG:
             return []
             
         # Create query embedding
-        query_embedding = self.openai.create_embeddings(query)
+        query_embedding = self.llm_api.create_embeddings(query)
         
-        # Search the index
-        distances, indices = self.index.search(query_embedding.reshape(1, -1), k)
+        # Normalize the query embedding for cosine similarity search
+        query_embedding = query_embedding / np.linalg.norm(query_embedding)
+        
+        # Search the index (IndexFlatIP uses inner product, which is cosine similarity for normalized vectors)
+        scores, indices = self.index.search(query_embedding.reshape(1, -1), k) # Renamed 'distances' to 'scores'
         
         # Format results
         results = []
-        for idx, distance in zip(indices[0], distances[0]):
+        for idx, score in zip(indices[0], scores[0]): # Renamed 'distance' to 'score'
             if idx < len(self.chunks) and idx >= 0:  # Ensure valid index
                 chunk = self.chunks[idx]
-                # Calculate cosine similarity from L2 distance
-                # sim = 1 - (distance / 2)  # Approximate for normalized vectors
+                # Score is now cosine similarity (higher is better)
                 results.append({
                     "text": chunk.text,
                     "metadata": chunk.metadata,
-                    "score": float(distance)  # L2 distance (lower is better)
+                    "score": float(score)  # Cosine similarity score
                 })
+                
+        # Sort results by score descending (higher is better)
+        results.sort(key=lambda x: x['score'], reverse=True)
                 
         return results
     
@@ -362,99 +402,40 @@ class RAG:
         """Clear all documents and reset the index."""
         self.chunks = []
         if self.embedding_dimension:
-            self.index = faiss.IndexFlatL2(self.embedding_dimension)
+            # Reset index using IndexFlatIP
+            self.index = faiss.IndexFlatIP(self.embedding_dimension)
         else:
             self.index = None
 
-    def ingest_documents(self, document: str, embedding_function: callable) -> None:
-        """
-        Ingest documents for RAG retrieval.
-        
-        Args:
-            document: Text content to ingest
-            embedding_function: Function to create embeddings
-        """
-        # Split document into chunks
-        chunks = self._chunk_text(document)
-        
-        # Create embeddings for chunks
-        embeddings = [embedding_function(chunk) for chunk in chunks]
-        
-        # Store chunks and embeddings
-        self.document_chunks = chunks
-        self.document_embeddings = embeddings
-        
-    def retrieve_context(self, document: str, query: str, embedding_function: callable, top_k: int = 5) -> str:
-        """
-        Retrieve relevant context based on query.
-        
-        Args:
-            document: Original document text (not used in this simple implementation)
-            query: Search query
-            embedding_function: Function to create embeddings
-            top_k: Number of top chunks to retrieve
-            
-        Returns:
-            Concatenated text of top relevant chunks
-        """
-        # If no documents ingested, return empty string
-        if not hasattr(self, 'document_chunks') or not self.document_chunks:
-            return ""
-        
-        # Create query embedding
-        query_embedding = embedding_function(query)
-        
-        # Simple implementation: return the first few chunks
-        # (In a real implementation, we would compute similarity and return top chunks)
-        return "\n\n".join(self.document_chunks[:min(top_k, len(self.document_chunks))])
-
-    def _chunk_text(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
-        """
-        Split text into chunks with overlap.
-        
-        Args:
-            text: Text to chunk
-            chunk_size: Size of each chunk
-            overlap: Overlap between chunks
-            
-        Returns:
-            List of text chunks
-        """
-        if not text:
-            return []
-        
-        # Simple implementation: split by rough character count
-        chunks = []
-        start = 0
-        
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
-            # Try to find a sentence break
-            if end < len(text):
-                for marker in ['. ', '! ', '? ', '\n\n']:
-                    pos = text.rfind(marker, start, end + 20)
-                    if pos > start:
-                        end = pos + 2  # Include the sentence end marker
-                        break
-            
-            chunks.append(text[start:end])
-            start = end - overlap if end < len(text) else len(text)
-        
-        return chunks
-
 # Example usage
 if __name__ == "__main__":
-    # Import OpenAI API wrapper
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "I_integrations")))
-    try:
-        from openai_API import OpenAIAPI
-    except ImportError:
-        print("Error: Could not import OpenAIAPI. Make sure openai_API.py is in the I_integrations directory.")
+    # Configure logging for the example
+    logging.basicConfig(level=logging.INFO, 
+                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Check if the selected LLM API Wrapper was successfully imported at the top
+    if LLMAPIWrapper is None:
+        print(f"Error: Could not import or initialize the {LLM_PROVIDER.upper()} API wrapper.")
+        print("Please check the LLM_PROVIDER setting, imports, and necessary dependencies/configurations.")
         exit(1)
     
-    # Initialize the OpenAI API and RAG system
-    openai_api = OpenAIAPI()
-    rag = RAG(openai_api)
+    # Initialize the chosen API Wrapper instance for the example
+    llm_api = None # Initialize as None
+    try:
+        if LLM_PROVIDER == "ollama":
+             # Ollama specific init, auto_pull checks/pulls the default model if not present
+             llm_api = LLMAPIWrapper(auto_pull=True) 
+        else:
+             # Assumes OpenAI/other init doesn't need specific args here
+             llm_api = LLMAPIWrapper() 
+        print(f"Successfully initialized {LLM_PROVIDER.upper()} API wrapper for example usage.")
+    except Exception as e:
+        print(f"Error initializing {LLM_PROVIDER.upper()} API wrapper: {e}")
+        print("Ensure the service (Ollama) or API key (OpenAI) is configured correctly.")
+        exit(1)
+    
+    # Initialize the RAG system with the chosen provider
+    rag = RAG(llm_api=llm_api)
     
     # Example document about AI
     ai_doc = """# Artificial Intelligence
@@ -491,23 +472,22 @@ AI has numerous applications across various industries:
 - **Manufacturing**: Quality control, predictive maintenance
 """
 
-    # Add document to RAG
-    rag.add_documents(ai_doc, document_ids=["ai_overview"], metadata=[{"author": "OpenAI"}])
+    # Add document to RAG using the new method name
+    rag.index_context(ai_doc, document_ids=["ai_overview"], metadata=[{"author": "AI Research"}])
     
-    # Query the RAG system
+    # Query the RAG system using the new method name
     query = "What are the main types of machine learning?"
     
     # Get retrieved chunks
-    retrieved_chunks = rag.search(query, k=3)
+    retrieved_chunks = rag.search_index(query, k=3)
     
     # Print retrieved chunks
-    print("\n=== Retrieved Chunks ===\n")
+    print("\n=== Retrieved Chunks (Cosine Similarity) ===\n")
     for i, chunk in enumerate(retrieved_chunks):
-        print(f"Chunk {i+1} (score: {chunk['score']:.4f}):")
+        print(f"Chunk {i+1} (score: {chunk['score']:.4f} - higher is better):")
         print(f"{chunk['text'][:150]}...\n")
     
-    # Demonstrate how to use RAG results with OpenAI API
-    # This would normally be in the textGen module
+    # Demonstrate how to use RAG results with the LLM API
     if retrieved_chunks:
         # Format retrieved context
         context_text = "\n\n---\n\n".join([c["text"] for c in retrieved_chunks])
@@ -521,15 +501,15 @@ QUESTION:
 
 YOUR ANSWER:"""
         
-        # Generate response using OpenAI API
+        # Generate response using the chosen LLM API
         system_prompt = "You are a helpful assistant that answers based on the provided context."
-        response = openai_api.chat_completion(
+        response = llm_api.chat_completion(
             user_prompt=prompt,
             system_prompt=system_prompt,
             temperature=0.7
         )
         
-        print("\n=== Generated Response ===\n")
+        print(f"\n=== Generated Response (using {LLM_PROVIDER.upper()}) ===\n")
         print(response)
     else:
         print("\nNo relevant chunks found for the query.") 

@@ -16,7 +16,7 @@ project_root = current_dir.parents[2]  # Go up 3 levels to reach project root
 sys.path.insert(0, str(project_root))
 
 # Import our API wrappers
-from src.I_integrations.openai_API import OpenAIAPI
+from src.I_integrations.openai_API import OpenAIWrapper
 from src.I_integrations.replicate_API import ReplicateAPI, download_file
 
 # Import utility modules
@@ -46,7 +46,7 @@ class VidsGenSimple:
         video_gen_model: str = "wan-i2v-480p"
     ):
         # Initialize API clients
-        self.llm = OpenAIAPI(
+        self.llm = OpenAIWrapper(
             api_key=openai_api_key, 
             model=llm_model,
             system_message="You are an AI video production assistant"

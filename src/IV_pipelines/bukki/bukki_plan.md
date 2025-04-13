@@ -1,7 +1,6 @@
 
 Bukki based on Storm:
 
-
 # User input Form & UI: (using custom tikinter // streamlit)
 
 >>>> stages progress bar on the top 

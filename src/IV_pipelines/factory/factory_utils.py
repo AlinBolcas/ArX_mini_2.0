@@ -192,7 +192,7 @@ def test_code_in_venv(
     main_script_name: str,        # New: Name of the main script to execute
     requirements: List[str],        # Still needed: List of packages to install
     timeout: int = 120,             # Increased timeout for potentially complex projects
-    cleanup_venv: bool = True       # Option to keep venv for debugging
+    cleanup_venv: bool = False      # << CHANGED: Keep venv by default for debugging
 ) -> tuple[bool, str]:
     """
     Tests the main Python script within a project directory in a dedicated venv.
@@ -224,6 +224,8 @@ def test_code_in_venv(
     venv_path = venv_base_dir / f"{project_name}_venv"
 
     logger.info(f"Preparing venv sandbox for project: {project_path} at {venv_path}")
+    if not cleanup_venv:
+        logger.warning(f"Venv cleanup is disabled. Directory will remain at: {venv_path}")
 
     # --- Input Validation ---
     if not project_path.is_dir():
@@ -251,7 +253,6 @@ def test_code_in_venv(
     if unsafe_skipped:
         logger.warning(f"Skipping potentially unsafe packages: {unsafe_skipped}")
 
-
     # --- Create Venv --- (Same as before, using venv_path)
     try:
         logger.info(f"Creating virtual environment at: {venv_path}")
@@ -275,6 +276,7 @@ def test_code_in_venv(
 
     # --- Install Requirements --- (Installs safe_requirements list)
     install_output = ""
+    pip_install_success = True # Assume success initially
     if safe_requirements:
         try:
             logger.info(f"Installing {len(safe_requirements)} requirements using {pip_path}...")
@@ -284,19 +286,39 @@ def test_code_in_venv(
                 f.write("\n".join(safe_requirements))
             
             install_cmd = [str(pip_path), 'install', '-r', str(temp_req_path)]
-            result = subprocess.run(install_cmd, capture_output=True, text=True, check=False, timeout=300)
-            install_output = result.stdout + "\n" + result.stderr
+            # Increased timeout for pip install
+            result = subprocess.run(install_cmd, capture_output=True, text=True, check=False, timeout=600)
+            install_output = result.stdout + "\n--- STDERR ---\n" + result.stderr # Combine outputs
             
             # Clean up temporary file
             temp_req_path.unlink(missing_ok=True)
             
             if result.returncode != 0:
-                 raise RuntimeError(f"pip install failed: {install_output}")
-            logger.info("Requirements installed successfully.")
+                 pip_install_success = False
+                 # Log the error prominently
+                 logger.error(f"pip install command failed with exit code {result.returncode}.")
+                 logger.error(f"Pip Install Output:\n{install_output}")
+                 # Raise runtime error to stop execution here, message includes output
+                 raise RuntimeError(f"pip install failed. See logs for details.\nOutput:\n{install_output}")
+            else:
+                 # Log success and full output at INFO level for visibility
+                 logger.info("Requirements installation command completed successfully.")
+                 logger.info(f"Pip Install Output:\n{install_output}")
+
+        except subprocess.TimeoutError as e:
+             logger.error(f"Error installing requirements: Timeout after {e.timeout} seconds.")
+             if venv_path.exists() and cleanup_venv: shutil.rmtree(venv_path, ignore_errors=True)
+             return False, f"Sandbox Setup Error: Failed to install requirements - Timeout. Output:\n{install_output}"
+
         except Exception as e:
+            # Catch the explicit RuntimeError or other exceptions
             logger.error(f"Error installing requirements: {e}")
+            # Ensure install_output is included if available
+            error_message = f"Sandbox Setup Error: Failed to install requirements - {e}"
+            if install_output:
+                error_message += f"\nOutput:\n{install_output}"
             if venv_path.exists() and cleanup_venv: shutil.rmtree(venv_path, ignore_errors=True)
-            return False, f"Sandbox Setup Error: Failed to install requirements - {e}\nOutput:\n{install_output}"
+            return False, error_message
     else:
         logger.info("No safe requirements to install.")
 
@@ -315,13 +337,16 @@ def test_code_in_venv(
             check=False, 
             timeout=timeout
         )
-        exec_output = result.stdout + "\n" + result.stderr # Combine stdout/stderr
+        # Return FULL output (stdout + stderr) regardless of success/fail for better debugging
+        exec_output = f"--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
 
         if result.returncode == 0:
             logger.info("Code execution in venv successful.")
+            logger.info(f"Execution Output:\n{exec_output}") # Log full output on success too
             success = True
         else:
             logger.warning(f"Code execution in venv failed with exit code {result.returncode}.")
+            logger.warning(f"Execution Output:\n{exec_output}") # Log full output on failure
             success = False # Explicitly set
 
     except subprocess.TimeoutExpired:
@@ -333,7 +358,7 @@ def test_code_in_venv(
         exec_output = f"Execution Error: {e}\n{traceback.format_exc()}"
         success = False
 
-    # --- Cleanup --- (Same as before)
+    # --- Cleanup ---
     if cleanup_venv:
         try:
             logger.info(f"Cleaning up venv: {venv_path}")

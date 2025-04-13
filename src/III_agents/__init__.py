@@ -3,7 +3,7 @@
 # Package export for the III_agents module
 
 try:
-    from .agents_openai_demo import OpenAIAgentsAPI
+    from .archive.agents_SDK_openai_REFERENCE import OpenAIAgentsAPI
     __all__ = ["OpenAIAgentsAPI"]
 except ImportError:
     # If the OpenAI Agents SDK is not installed, we still want

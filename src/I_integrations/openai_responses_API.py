@@ -14,7 +14,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("primp").setLevel(logging.WARNING)
 
-class OpenAIResponsesAPI:
+class OpenAIWrapper:
     """
     Streamlined wrapper for OpenAI's Responses API services.
     Provides simplified access to key OpenAI capabilities.
@@ -214,6 +214,8 @@ class OpenAIResponsesAPI:
         except Exception as e:
             return f"Error: {str(e)}"
 
+    chat_completion = response
+    
     def _process_stream(self, response):
         """Process streaming response from OpenAI Responses API."""
         try:
@@ -1047,7 +1049,7 @@ Please use the get_video_style_info function with style="rock" to tell me what s
 
     try:
         # Initialize API with specific instructions for concise responses
-        api = OpenAIResponsesAPI(
+        api = OpenAIWrapper(
             model="gpt-4o",
             system_message="You are a specialized AI assistant for music video creation. Provide clear, impactful answers focusing on practical steps and innovative approaches. Keep responses concise but informative."
         )

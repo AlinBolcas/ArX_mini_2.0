@@ -64,7 +64,7 @@ class OllamaWrapper:
             **(default_options or {})
         }
         
-        print(f"[OllamaWrapper] Initialized with model={self.model}, embedding_model={self.embedding_model}")
+        logger.info(f"[OllamaWrapper] Initialized with model={self.model}, embedding_model={self.embedding_model}")
 
     def _create_messages(
         self,
@@ -92,6 +92,203 @@ class OllamaWrapper:
         
         return messages
 
+    def _extract_tool_call_from_text(self, text_response: str, tools: Optional[List[Dict]] = None) -> Union[Dict, List[Dict], str]:
+        """
+        Extract tool calls from text responses for compatibility with OpenAI format.
+        
+        Args:
+            text_response: Text response from Ollama
+            tools: List of tools that were made available
+            
+        Returns:
+            - Dict with tool call info if a single tool call is detected
+            - List of dict with tool calls if multiple tool calls are detected
+            - Original string if no tool calls are detected
+        """
+        # If no tools were provided or response doesn't look JSON-like, return as is
+        if not tools or not (
+            text_response.strip().startswith("{") or 
+            "```json" in text_response or 
+            "```" in text_response or
+            "```tool_code" in text_response or
+            "tool_code:" in text_response
+        ):
+            return text_response
+        
+        try:
+            # Step 1: Extract JSON from various formats
+            json_objects = []
+            
+            # Check for tool_code blocks specifically - models often use this format
+            if "```tool_code" in text_response or "tool_code:" in text_response:
+                logger.debug("[OllamaWrapper] Detected tool_code format, attempting to parse")
+                
+                # Match tool_code blocks with ```tool_code``` format
+                import re
+                tool_code_blocks = re.findall(r'```tool_code\n(.*?)\n```', text_response, re.DOTALL)
+                if not tool_code_blocks:
+                    # Try alternate format: ```tool_code ... ```
+                    tool_code_blocks = re.findall(r'```tool_code\s*(.*?)\s*```', text_response, re.DOTALL)
+                
+                # Process each tool_code block
+                for block in tool_code_blocks:
+                    # First try to directly parse it as JSON
+                    try:
+                        if block.strip().startswith("{"):
+                            json_obj = json.loads(block.strip())
+                            json_objects.append(json_obj)
+                            continue
+                    except json.JSONDecodeError:
+                        pass
+                    
+                    # If not JSON, it might be in the format: tool_code: function_name, param1="value1", param2="value2"
+                    if "tool_code:" in block or "," in block:
+                        try:
+                            # Extract function name and params
+                            block = block.strip()
+                            if block.startswith("tool_code:"):
+                                block = block[len("tool_code:"):].strip()
+                            
+                            # Split by first comma to separate function name and params
+                            parts = block.split(",", 1)
+                            function_name = parts[0].strip()
+                            
+                            arguments = {}
+                            if len(parts) > 1:
+                                # Parse param=value pairs
+                                params_text = parts[1].strip()
+                                param_pattern = r'(\w+)=(?:"([^"]*)"|\{([^}]*)\}|(\S+))'
+                                param_matches = re.findall(param_pattern, params_text)
+                                
+                                for match in param_matches:
+                                    param_name = match[0]
+                                    # Find the first non-empty value among the capture groups
+                                    param_value = next((v for v in match[1:] if v), "")
+                                    arguments[param_name] = param_value
+                            
+                            json_objects.append({
+                                "function": function_name,
+                                "arguments": arguments
+                            })
+                            logger.debug(f"[OllamaWrapper] Extracted tool call from non-JSON format: {function_name}")
+                        except Exception as e:
+                            logger.error(f"[OllamaWrapper] Error parsing non-JSON tool_code: {e}")
+            
+            # Try direct JSON parse first for a single complete object
+            if not json_objects and text_response.strip().startswith("{"):
+                try:
+                    # First try to parse the entire response as a single JSON object
+                    json_obj = json.loads(text_response.strip())
+                    json_objects.append(json_obj)
+                except json.JSONDecodeError:
+                    # If that fails, it might be multiple JSON objects in sequence
+                    # Look for patterns like "} {" or "}\n{" that indicate multiple objects
+                    import re
+                    # Find all potential JSON objects using regex
+                    potential_jsons = re.findall(r'({[^{}]*(?:{[^{}]*})*[^{}]*})', text_response)
+                    for json_str in potential_jsons:
+                        try:
+                            json_obj = json.loads(json_str)
+                            json_objects.append(json_obj)
+                        except json.JSONDecodeError:
+                            continue
+            
+            # Try code blocks with JSON
+            if not json_objects and "```json" in text_response:
+                json_blocks = text_response.split("```json")
+                for block in json_blocks[1:]:
+                    if "```" in block:
+                        json_text = block.split("```")[0].strip()
+                        # Check for multiple JSON objects in this block too
+                        try:
+                            # Try as single object first
+                            json_obj = json.loads(json_text)
+                            json_objects.append(json_obj)
+                        except json.JSONDecodeError:
+                            # Try to find multiple objects
+                            import re
+                            potential_jsons = re.findall(r'({[^{}]*(?:{[^{}]*})*[^{}]*})', json_text)
+                            for json_str in potential_jsons:
+                                try:
+                                    json_obj = json.loads(json_str)
+                                    json_objects.append(json_obj)
+                                except json.JSONDecodeError:
+                                    continue
+            
+            # Try generic code blocks if still not found
+            if not json_objects and "```" in text_response:
+                code_blocks = text_response.split("```")
+                for i in range(1, len(code_blocks), 2):
+                    if i < len(code_blocks):
+                        json_text = code_blocks[i].strip()
+                        if json_text.startswith("{"):
+                            try:
+                                # Try as single object first
+                                json_obj = json.loads(json_text)
+                                json_objects.append(json_obj)
+                            except json.JSONDecodeError:
+                                # Try to find multiple objects
+                                import re
+                                potential_jsons = re.findall(r'({[^{}]*(?:{[^{}]*})*[^{}]*})', json_text)
+                                for json_str in potential_jsons:
+                                    try:
+                                        json_obj = json.loads(json_str)
+                                        json_objects.append(json_obj)
+                                    except json.JSONDecodeError:
+                                        continue
+            
+            # Step 2: Process extracted JSON objects
+            tool_calls = []
+            for json_obj in json_objects:
+                # Check if it looks like a tool call
+                if (
+                    ("function" in json_obj and "arguments" in json_obj) or
+                    ("name" in json_obj and "arguments" in json_obj) or
+                    ("tool" in json_obj and "parameters" in json_obj)
+                ):
+                    # Standardize format to match OpenAI API
+                    # Extract either "function", "name", or "tool" as the function name
+                    function_name = json_obj.get("function", 
+                                             json_obj.get("name", 
+                                              json_obj.get("tool")))
+                    
+                    # Extract either "arguments" or "parameters" as the arguments
+                    arguments = json_obj.get("arguments", json_obj.get("parameters", {}))
+                    
+                    # Ensure arguments is a dict
+                    if not isinstance(arguments, dict):
+                        if isinstance(arguments, str):
+                            try:
+                                arguments = json.loads(arguments)
+                            except json.JSONDecodeError:
+                                arguments = {"raw_input": arguments}
+                        else:
+                            arguments = {"value": arguments}
+                    
+                    # Add standardized tool call
+                    tool_calls.append({
+                        "name": function_name,
+                        "arguments": arguments
+                    })
+            
+            # Step 3: Return in OpenAI-compatible format
+            if len(tool_calls) == 1:
+                logger.debug(f"[OllamaWrapper] Extracted single tool call: {tool_calls[0]['name']}")
+                return tool_calls[0]  # Single tool call as dict
+            elif len(tool_calls) > 1:
+                logger.debug(f"[OllamaWrapper] Extracted multiple tool calls: {[tc['name'] for tc in tool_calls]}")
+                return tool_calls  # Multiple tool calls as list
+            
+            # No valid tool calls found
+            return text_response
+            
+        except Exception as e:
+            logger.error(f"[OllamaWrapper] Error parsing tool calls: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return original response if parsing fails
+            return text_response
+
     def chat_completion(
         self, 
         user_prompt: str,
@@ -101,18 +298,89 @@ class OllamaWrapper:
         max_tokens: Optional[int] = None,
         model: Optional[str] = None,
         tools: Optional[List[Dict]] = None,
-        available_tools: Optional[Dict[str, callable]] = None,
         message_history: Optional[List[Dict[str, str]]] = None,
         **kwargs
-    ) -> Union[str, Iterator[Dict[str, Any]]]:
-        """Generate text completion using chat models with tool support."""
+    ) -> Union[str, Dict, List[Dict], Iterator[str]]:
+        """
+        Generate text completion using chat models with tool support.
+        
+        For tool/function calling, Ollama models don't have native function calling
+        like OpenAI, but we describe available tools in the system prompt, extract
+        tool calls if present, and return in the same format as OpenAI.
+        
+        Returns:
+            - String content if no tool calls were made
+            - Dict with tool call info if a single tool call was made
+            - List of tool call dicts if multiple tool calls were made
+            - For streaming: An iterator yielding content chunks
+        """
         try:
-            print(f"[OllamaWrapper] Making request with model: {model or self.model}")
+            logger.info(f"[OllamaWrapper] Making request with model: {model or self.model}")
+            
+            # If tools are provided, enhance the system prompt to describe them
+            enhanced_system_prompt = system_prompt
+            if tools and not stream:
+                tool_descriptions = []
+                for tool in tools:
+                    # Handle both OpenAI format and simple format
+                    if isinstance(tool, dict):
+                        if "function" in tool:  # OpenAI format
+                            name = tool["function"].get("name", "unknown")
+                            desc = tool["function"].get("description", "")
+                            params = tool["function"].get("parameters", {})
+                        else:  # Direct schema
+                            name = tool.get("name", "unknown")
+                            desc = tool.get("description", "")
+                            params = tool.get("parameters", {})
+                        
+                        # Format a more compelling tool description
+                        param_desc = []
+                        if "properties" in params:
+                            for param_name, param_info in params.get("properties", {}).items():
+                                param_type = param_info.get("type", "string")
+                                param_desc_text = param_info.get("description", "")
+                                
+                                # Add enum values if available
+                                enum_values = param_info.get("enum", [])
+                                if enum_values:
+                                    param_desc_text += f" Options: {', '.join(enum_values)}"
+                                    
+                                param_desc.append(f"- {param_name} ({param_type}): {param_desc_text}")
+                        
+                        tool_desc = (
+                            f"Function: {name}\n"
+                            f"Description: {desc}\n"
+                            f"Parameters:\n" + 
+                            "\n".join(param_desc) +
+                            f"\nRequired parameters: {', '.join(params.get('required', []))}"
+                        )
+                        tool_descriptions.append(tool_desc)
+                
+                if tool_descriptions:
+                    # Create a more forceful instruction to use tools
+                    enhanced_system_prompt = (system_prompt or self.system_message) + "\n\n" + (
+                        "CRITICALLY IMPORTANT INSTRUCTIONS FOR TOOL USAGE:\n\n"
+                        "You have access to the following tools/functions:\n\n" + 
+                        "\n\n".join(tool_descriptions) + 
+                        "\n\n"
+                        "STRICTLY FOLLOW THESE RULES:\n"
+                        "1. IF the user's request requires ANY of these tools, output ONLY a JSON object and NOTHING ELSE.\n"
+                        "2. The JSON MUST use this EXACT format:\n"
+                        '{"function": "function_name", "arguments": {"param1": "value1", "param2": "value2"}}\n\n'
+                        "3. DO NOT include explanations, markdown formatting, or code blocks around the JSON.\n"
+                        "4. DO NOT use text before or after the JSON object.\n"
+                        "5. DO NOT write 'I'll use the tool' or explain what you're doing.\n"
+                        "6. ONLY return pure JSON when using a tool.\n\n"
+                        "EXAMPLES:\n"
+                        "For get_weather: {\"function\": \"get_weather\", \"arguments\": {\"location\": \"New York\"}}\n"
+                        "For generate_image: {\"function\": \"generate_image\", \"arguments\": {\"prompt\": \"sunset over mountains\"}}\n\n"
+                        "If NO tools are needed, respond normally with regular text."
+                    )
             
             # Create messages with history
             messages = self._create_messages(
                 user_prompt=user_prompt,
-                system_prompt=system_prompt,
+                system_prompt=enhanced_system_prompt,
                 message_history=message_history
             )
 
@@ -124,76 +392,15 @@ class OllamaWrapper:
                 **kwargs
             }
             
-            # Handle Ollama-specific format parameter
+            # Handle Ollama-specific format parameter (only if explicitly passed)
             format_param = kwargs.pop('format', None)
             if format_param:
                 params['format'] = format_param
 
-            if tools and available_tools:
-                # Format tool descriptions for the prompt
-                tool_descriptions = []
-                for tool in tools:
-                    tool_desc = (
-                        f"Tool: {tool['name']}\n"
-                        f"Description: {tool['description']}\n"
-                        f"Parameters: {json.dumps(tool['parameters'], indent=2)}"
-                    )
-                    tool_descriptions.append(tool_desc)
-                
-                tool_message = (
-                    "IMPORTANT INSTRUCTIONS FOR TOOL USAGE:\n"
-                    "1. You have access to tool functions to help with your responses. Call them when asked by the user.\n"
-                    "2. Do NOT guess/simulate or make up the response if the user is expecting us to use the tool function.\n"
-                    "3. IF THE USER DOESN'T ASK for the response the function would provide, respond normally without calling.\n"
-                    "4. ONLY WHEN you are asked to use the tool function, response EXACTLY and ONLY the JSON response which calls the tool function and NOTHING ELSE. We have hard coded systems set in place to execute the function based on your response and return the Result back to you so is ESSENTIAL your initial response is EXACTLY the JSON response which calls the tool function and NOTHING ELSE.\n"
-                    "5. After recieving the tool function Result, integrate the Result into your final reply without making up or changing the Result.\n"
-                    "AVAILABLE TOOLS:\n\n" + 
-                    "\n\n".join(tool_descriptions) +
-                    "\n\nTO USE A TOOL, respond ONLY with a JSON object containing 'tool' and 'parameters' keys. DO NOT ADD IT IN A BLOCK OF TEXT, JUST THE JSON OBJECT."
-                )
+            # elif tools:
+            #     params['format'] = 'json'
 
-                # Use structured_output for guaranteed JSON response
-                try:
-                    tool_response = self.structured_output(
-                        user_prompt=user_prompt,
-                        system_prompt=tool_message,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        model=model,
-                        message_history=message_history
-                    )
-                    
-                    # Execute tool if valid response format
-                    if isinstance(tool_response, dict) and "tool" in tool_response and "parameters" in tool_response:
-                        tool_name = tool_response["tool"]
-                        if tool_name in available_tools:
-                            tool_func = available_tools[tool_name]
-                            result = tool_func(**tool_response["parameters"])
-                            
-                            # Add tool result to messages and get final response
-                            messages.extend([
-                                {"role": "assistant", "content": f"Tool called:\n{json.dumps(tool_response)} \nResult of tool execution is:\n {result}"},
-                                {"role": "user", "content": "Now respond naturally using ONLY the Result of the tool call. DO NOT make up or change the result."}
-                            ])
-                            
-                            final_response = ollama.chat(
-                                model=model or self.model,
-                                messages=messages,
-                                options=params,
-                                stream=stream
-                            )
-
-                            if stream:
-                                return self._process_stream(final_response)
-                            return final_response["message"]["content"]
-                except Exception as tool_error:
-                    print(f"[OllamaWrapper] Error in tool execution: {tool_error}")
-                    # Fall through to normal response if tool execution fails
-            else:
-                # print("[OllamaWrapper] No tools or available_tools provided, skipping tool branch.")
-                pass
-
-            # Standard chat completion without tools
+            # Make API call
             response = ollama.chat(
                 model=model or self.model,
                 messages=messages,
@@ -201,14 +408,43 @@ class OllamaWrapper:
                 stream=stream
             )
 
+            # For streaming, just yield the content chunks
             if stream:
                 return self._process_stream(response)
             
-            return response["message"]["content"]
+            # For normal mode, get the content as a string
+            content = response["message"]["content"].strip()
+            
+            # If tools were provided, attempt to extract tool calls to match OpenAI format
+            if tools:
+                # Pre-process content to try to find JSON in noisy text
+                if not content.startswith('{"function":') and not content.startswith('{"name":'):
+                    # Look for patterns that indicate a JSON object is embedded in text
+                    import re
+                    json_pattern = r'({[\s\S]*?})'  # Non-greedy match for JSON-like structure
+                    matches = re.findall(json_pattern, content)
+                    if matches:
+                        for potential_json in matches:
+                            try:
+                                # If this parses as JSON and has function/name/arguments, replace content with just this JSON
+                                parsed = json.loads(potential_json)
+                                if ('function' in parsed and 'arguments' in parsed) or ('name' in parsed and 'arguments' in parsed):
+                                    logger.debug(f"[OllamaWrapper] Found likely tool call JSON in text, extracting: {potential_json[:100]}...")
+                                    content = potential_json
+                                    break
+                            except json.JSONDecodeError:
+                                continue
+                return self._extract_tool_call_from_text(content, tools)
+            
+            # Otherwise return the raw content
+            return content
 
         except Exception as e:
-            print(f"Error in chat completion: {e}")
-            raise
+            logger.error(f"Error in chat completion: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return error as text for robustness
+            return f"An error occurred: {str(e)}"
 
     def reasoned_completion(
         self,
@@ -274,7 +510,7 @@ class OllamaWrapper:
                         return buffer
                 return process_stream()
             else:
-                response_obj = self.chat_completion(
+                full_response = self.chat_completion(
                     user_prompt=user_prompt,
                     system_prompt=system_prompt,
                     model=model,
@@ -284,7 +520,8 @@ class OllamaWrapper:
                     message_history=messages,
                     **kwargs
                 )
-                full_response = response_obj
+                
+                # Now full_response will be a string, not a dict
                 if "<think>" in full_response and "</think>" in full_response:
                     parts = full_response.split("</think>", 1)
                     thinking = parts[0].replace("<think>", "").strip()
@@ -294,7 +531,7 @@ class OllamaWrapper:
                     return full_response
             
         except Exception as e:
-            print(f"Error in reasoned completion: {e}")
+            logger.error(f"Error in reasoned completion: {e}")
             raise
 
     def vision_analysis(
@@ -311,11 +548,11 @@ class OllamaWrapper:
     ) -> Union[str, Iterator[str]]:
         """Analyze images using chat completion."""
         try:
-            print(f"[OllamaWrapper] Making vision request with model: {model or self.model}")
+            logger.info(f"[OllamaWrapper] Making vision request with model: {model or self.model}")
             
             # Handle URL or local path
             if image_path.startswith(('http://', 'https://')):
-                print(f"Fetching image from URL: {image_path}")
+                logger.info(f"Fetching image from URL: {image_path}")
                 response = requests.get(image_path, stream=True)
                 response.raise_for_status()
                 
@@ -336,7 +573,7 @@ class OllamaWrapper:
             # Add image to the last user message
             messages[-1]["images"] = [image_data]
             
-            # Use chat_completion for consistency
+            # Use chat_completion for consistency - now returns raw text string
             return self.chat_completion(
                 user_prompt=user_prompt,
                 system_prompt=system_prompt,
@@ -349,7 +586,7 @@ class OllamaWrapper:
             )
 
         except Exception as e:
-            print(f"Error in vision analysis: {e}")
+            logger.error(f"Error in vision analysis: {e}")
             raise
         
     def structured_output(
@@ -365,7 +602,7 @@ class OllamaWrapper:
     ) -> Any:
         """Generate structured outputs using Pydantic models or direct JSON."""
         try:
-            print(f"[OllamaWrapper] Making structured output request with model: {model or self.model}")
+            logger.info(f"[OllamaWrapper] Making structured output request with model: {model or self.model}")
 
             # Create a more explicit system prompt for JSON formatting
             json_system_prompt = (
@@ -379,7 +616,8 @@ class OllamaWrapper:
             
             # Add schema information if output_class is provided
             if output_class:
-                schema = output_class.schema()
+                # Use model_json_schema() instead of schema() (Pydantic V2)
+                schema = output_class.model_json_schema()
                 example = {}
                 for field, details in schema["properties"].items():
                     field_type = details.get("type", "string")
@@ -443,15 +681,15 @@ class OllamaWrapper:
                 return json_response
                 
             except json.JSONDecodeError as je:
-                print(f"JSON parse error at position {je.pos}: {je.msg}")
-                print(f"Raw content: {content}")
+                logger.error(f"JSON parse error at position {je.pos}: {je.msg}")
+                logger.debug(f"Raw content: {content}")
                 raise
             except ValidationError as ve:
-                print(f"Validation error: {ve}")
+                logger.error(f"Validation error: {ve}")
                 raise
 
         except Exception as e:
-            print(f"Error in structured output: {e}")
+            logger.error(f"Error in structured output: {e}")
             raise
 
     def create_embeddings(
@@ -467,9 +705,9 @@ class OllamaWrapper:
         try:
             # Print once at the start instead of for each chunk
             if len(texts) > 1:
-                print(f"[OllamaWrapper] Creating embeddings for {len(texts)} chunks with model: {the_model}")
+                logger.info(f"[OllamaWrapper] Creating embeddings for {len(texts)} chunks with model: {the_model}")
             else:
-                print(f"[OllamaWrapper] Creating embedding with model: {the_model}")
+                logger.info(f"[OllamaWrapper] Creating embedding with model: {the_model}")
             
             embeddings = []
             for t in texts:
@@ -482,7 +720,7 @@ class OllamaWrapper:
             return np.array(embeddings, dtype=np.float32)
             
         except Exception as e:
-            print(f"[OllamaWrapper] Embedding error: {str(e)}")
+            logger.error(f"[OllamaWrapper] Embedding error: {str(e)}")
             raise
 
     def list_models(self) -> List[str]:
@@ -492,20 +730,20 @@ class OllamaWrapper:
             return [model.get("name", model.get("model", "unknown")) 
                    for model in response.models]
         except Exception as e:
-            print(f"[OllamaWrapper] Error listing models: {str(e)}")
+            logger.error(f"[OllamaWrapper] Error listing models: {str(e)}")
             return []
 
     def pull_model(self, model_name: str):
         """Pull a model from Ollama's registry."""
         try:
-            print(f"[OllamaWrapper] Pulling model: {model_name}")
+            logger.info(f"[OllamaWrapper] Pulling model: {model_name}")
             
             for progress in ollama.pull(model_name):
                 status = progress.status
                 if status:
-                    print(f"[OllamaWrapper] Pull status: {status}")
+                    logger.info(f"[OllamaWrapper] Pull status: {status}")
         except Exception as e:
-            print(f"[OllamaWrapper] Pull error: {str(e)}")
+            logger.error(f"[OllamaWrapper] Pull error: {str(e)}")
             raise
 
     def _validate_model(self, model: str, auto_pull: bool = False) -> str:
@@ -526,7 +764,7 @@ class OllamaWrapper:
 
         if not model_available:
             if auto_pull:
-                print(f"[OllamaWrapper] Model '{model}' not found. Attempting to pull...")
+                logger.warning(f"[OllamaWrapper] Model '{model}' not found. Attempting to pull...")
                 try:
                     self.pull_model(model)
                     return model
@@ -547,68 +785,6 @@ class OllamaWrapper:
         
         return model
 
-    def convert_function_to_schema(self, func) -> Dict:
-        """Convert a Python function to Ollama's function schema format."""
-        try:
-            from pydantic import BaseModel, Field
-            from typing import get_type_hints, Annotated
-            import inspect
-
-            # Get function signature and docstring
-            sig = inspect.signature(func)
-            type_hints = get_type_hints(func)
-            
-            # Create schema for the function
-            schema = {
-                "name": func.__name__,
-                "description": func.__doc__ or "",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-            
-            def get_json_type(python_type: type) -> str:
-                """Convert Python type to JSON schema type."""
-                type_map = {
-                    str: "string",
-                    int: "integer",
-                    float: "number",
-                    bool: "boolean",
-                    list: "array",
-                    dict: "object"
-                }
-                return type_map.get(python_type, "string")
-                    
-            # Add parameters to schema
-            for param_name, param in sig.parameters.items():
-                param_type = type_hints.get(param_name, str)
-                description = ""
-                
-                # Extract parameter description from docstring
-                if func.__doc__:
-                    doc_lines = func.__doc__.split('\n')
-                    for line in doc_lines:
-                        if f':param {param_name}:' in line:
-                            description = line.split(f':param {param_name}:')[1].strip()
-                
-                # Add parameter to schema
-                schema["parameters"]["properties"][param_name] = {
-                    "type": get_json_type(param_type),
-                    "description": description
-                }
-                
-                # Add to required if no default value
-                if param.default == param.empty:
-                    schema["parameters"]["required"].append(param_name)
-            
-            return schema
-            
-        except Exception as e:
-            print(f"Error converting function to tool schema: {e}")
-            raise
-
     def _process_stream(self, response):
         """Process streaming response from Ollama"""
         try:
@@ -616,19 +792,7 @@ class OllamaWrapper:
                 if "message" in chunk and "content" in chunk["message"]:
                     yield chunk["message"]["content"]
         except Exception as e:
-            print(f"[OllamaWrapper] Error in stream processing: {e}")
-
-    def _execute_tool_call(self, tool_call: Dict, available_tools: Dict[str, callable]) -> Any:
-        """Execute a tool call and return its result."""
-        try:
-            func_name = tool_call["name"]
-            if func_name not in available_tools:
-                raise ValueError(f"Unknown tool: {func_name}")
-            
-            args = tool_call["arguments"]
-            return available_tools[func_name](**args)
-        except Exception as e:
-            return f"Error executing {func_name}: {str(e)}"
+            logger.error(f"[OllamaWrapper] Error in stream processing: {e}")
 
 # Add the test suite below
 if __name__ == "__main__":
@@ -669,7 +833,8 @@ if __name__ == "__main__":
                 output_class=VideoStyle,
                 max_tokens=200
             )
-            print(f"Structured Output: {json.dumps(result.dict(), indent=2)}")
+            # Use model_dump() instead of dict() (Pydantic V2)
+            print(f"Structured Output: {json.dumps(result.model_dump(), indent=2)}")
         except Exception as e:
             print(f"Error: {str(e)}")
 
@@ -687,22 +852,207 @@ if __name__ == "__main__":
         print("\nStream complete")
 
     def run_function_calling_test(api):
-        """Test 4: Function Calling"""
-        print("\n🔧 Function Test")
-        def get_video_tools(style: str):
-            return {"tools": ["AE", "Blender"]}
+        """Test 4: Function Calling (Modified)"""
+        print("\n🔧 Function Test (OpenAI-Compatible Format)")
+        print("Testing tool call extraction from Ollama response to match OpenAI format")
+        
+        # Define two simple tool schemas for testing
+        weather_tool_schema = {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get current weather for a specific location",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": "City name and optional country code"
+                        },
+                        "unit": {
+                            "type": "string",
+                            "enum": ["celsius", "fahrenheit"],
+                            "description": "Temperature unit"
+                        }
+                    },
+                    "required": ["location"]
+                }
+            }
+        }
+        
+        image_tool_schema = {
+            "type": "function",
+            "function": {
+                "name": "generate_image",
+                "description": "Generate an image based on a text description",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {
+                            "type": "string",
+                            "description": "Detailed description of the desired image"
+                        },
+                        "style": {
+                            "type": "string",
+                            "enum": ["realistic", "cartoon", "abstract", "digital-art"],
+                            "description": "Visual style of the generated image"
+                        },
+                        "size": {
+                            "type": "string",
+                            "enum": ["small", "medium", "large"],
+                            "description": "Size of the generated image"
+                        }
+                    },
+                    "required": ["prompt"]
+                }
+            }
+        }
+        
+        tools = [weather_tool_schema, image_tool_schema]
         
         try:
-            result = api.chat_completion(
-                user_prompt="Get tools for rock videos using get_video_tools",
-                tools=[api.convert_function_to_schema(get_video_tools)],
-                available_tools={"get_video_tools": get_video_tools},
+            # Test 1: Single tool call
+            print("\n--- TESTING SINGLE TOOL CALL ---")
+            print("Query: 'What's the weather like in Paris?'")
+            
+            # This should trigger a tool call for weather
+            result1 = api.chat_completion(
+                user_prompt="What's the weather like in Paris?",
+                tools=tools,
                 temperature=0.1,
-                max_tokens=200
+                max_tokens=500,
             )
-            print(f"Result:\n{result}")
+            
+            print("\nResult type:", type(result1).__name__)
+            
+            # Check if we got an OpenAI-style tool call dict
+            if isinstance(result1, dict) and "name" in result1 and "arguments" in result1:
+                print("\n✅ Successfully extracted tool call:")
+                print(f"Tool name: {result1['name']}")
+                print(f"Arguments: {json.dumps(result1['arguments'], indent=2)}")
+            else:
+                print("\n❌ No tool call extracted, got regular response:")
+                print(f"{str(result1)[:200]}...")
+                
+            # Test 2: Try to get multiple tool calls (harder to trigger reliably)
+            print("\n--- TESTING POTENTIAL MULTIPLE TOOL CALLS ---")
+            print("Query: 'I'm traveling to New York. What's the weather there, and can you generate an image of the skyline?'")
+            
+            # This might trigger multiple tool calls, but it's model-dependent
+            result2 = api.chat_completion(
+                user_prompt="I'm traveling to New York. What's the weather there, and can you generate an image of the skyline?",
+                tools=tools,
+                temperature=0.1,
+                max_tokens=500,
+            )
+            
+            print("\nResult type:", type(result2).__name__)
+            
+            if isinstance(result2, list) and all(isinstance(tc, dict) and "name" in tc for tc in result2):
+                print("\n✅ Successfully extracted multiple tool calls:")
+                for i, tc in enumerate(result2):
+                    print(f"\nTool call #{i+1}:")
+                    print(f"Tool name: {tc['name']}")
+                    print(f"Arguments: {json.dumps(tc['arguments'], indent=2)}")
+            elif isinstance(result2, dict) and "name" in result2 and "arguments" in result2:
+                print("\n✅ Extracted single tool call (model chose one tool):")
+                print(f"Tool name: {result2['name']}")
+                print(f"Arguments: {json.dumps(result2['arguments'], indent=2)}")
+            else:
+                print("\n❌ No tool calls extracted, got regular response:")
+                print(f"{str(result2)[:200]}...")
+            
+            # Test 3: Test with direct JSON response (simulate Ollama output)
+            print("\n--- TESTING EXTRACTION FROM DIRECT JSON ---")
+            
+            # Create a mock JSON response that our extraction should handle
+            mock_json_response = """
+            ```json
+            {
+              "function": "get_weather",
+              "arguments": {
+                "location": "Tokyo",
+                "unit": "celsius"
+              }
+            }
+            ```
+
+            Here's the weather information for Tokyo.
+            """
+            
+            # Use the internal extraction method directly
+            extracted = api._extract_tool_call_from_text(mock_json_response, tools)
+            
+            if isinstance(extracted, dict) and "name" in extracted and "arguments" in extracted:
+                print("\n✅ Successfully extracted tool call from JSON block:")
+                print(f"Tool name: {extracted['name']}")
+                print(f"Arguments: {json.dumps(extracted['arguments'], indent=2)}")
+            else:
+                print("\n❌ Failed to extract from mock JSON response")
+                
+            # Test 4: Test with multiple sequential JSON objects (common Ollama response pattern)
+            print("\n--- TESTING EXTRACTION FROM MULTIPLE SEQUENTIAL JSON OBJECTS ---")
+            
+            # Create a mock response with multiple sequential JSON objects
+            mock_multiple_json = """
+            {"function": "get_weather", "arguments": {"location": "London", "unit": "celsius"}}
+            {"function": "generate_image", "arguments": {"prompt": "London skyline with Tower Bridge", "style": "realistic", "size": "large"}}
+            """
+            
+            # Use the internal extraction method directly
+            extracted_multiple = api._extract_tool_call_from_text(mock_multiple_json, tools)
+            
+            if isinstance(extracted_multiple, list) and len(extracted_multiple) == 2:
+                print("\n✅ Successfully extracted multiple tool calls from sequential JSONs:")
+                for i, tc in enumerate(extracted_multiple):
+                    print(f"\nTool call #{i+1}:")
+                    print(f"Tool name: {tc['name']}")
+                    print(f"Arguments: {json.dumps(tc['arguments'], indent=2)}")
+            else:
+                print("\n❌ Failed to extract multiple tool calls from sequential JSONs:")
+                print(f"Result type: {type(extracted_multiple).__name__}")
+                print(f"Content: {extracted_multiple}")
+                
+            # Test 5: Test with tool_code format (Ollama's another common pattern)
+            print("\n--- TESTING EXTRACTION FROM TOOL_CODE FORMAT ---")
+            
+            # Create a mock response with the tool_code format
+            mock_tool_code = """
+            I'll use the web_crawl and generate_image tools to fulfill your request.
+            
+            ```tool_code
+            tool_code: web_crawl, query="latest news on AI technology", sources="DuckDuckGo", num_results=3
+            ```
+            
+            After finding information, I'll generate an image:
+            
+            ```tool_code
+            {"function": "generate_image", "arguments": {"prompt": "Advanced AI robot with futuristic background"}}
+            ```
+            """
+            
+            # Use the internal extraction method directly
+            extracted_tool_code = api._extract_tool_call_from_text(mock_tool_code, tools)
+            
+            if isinstance(extracted_tool_code, list) and len(extracted_tool_code) >= 1:
+                print("\n✅ Successfully extracted tool calls from tool_code format:")
+                for i, tc in enumerate(extracted_tool_code):
+                    print(f"\nTool call #{i+1}:")
+                    print(f"Tool name: {tc['name']}")
+                    print(f"Arguments: {json.dumps(tc['arguments'], indent=2)}")
+            elif isinstance(extracted_tool_code, dict) and "name" in extracted_tool_code:
+                print("\n✅ Successfully extracted single tool call from tool_code format:")
+                print(f"Tool name: {extracted_tool_code['name']}")
+                print(f"Arguments: {json.dumps(extracted_tool_code['arguments'], indent=2)}")
+            else:
+                print("\n❌ Failed to extract tool calls from tool_code format:")
+                print(f"Result type: {type(extracted_tool_code).__name__}")
+                print(f"Content: {extracted_tool_code}")
+                
         except Exception as e:
-            print(f"Error: {str(e)}")
+            print(f"\n❌ Error during function call testing: {e}")
+            import traceback
+            traceback.print_exc()
 
     def run_reasoned_completion_test(api):
         """Test 5: Reasoned Response"""
@@ -723,7 +1073,7 @@ if __name__ == "__main__":
                 image_path=image_url,
                 user_prompt="Describe this music video frame",
                 model="llama3.2-vision:11b",
-                max_tokens=200
+                max_tokens=1000
             )
             print(f"Analysis:\n{result}")
         except Exception as e:
@@ -740,7 +1090,7 @@ if __name__ == "__main__":
         "1": ("Basic Response", run_basic_response_test),
         "2": ("Structured Output", run_structured_response_test),
         "3": ("Streaming", run_streaming_test),
-        "4": ("Function Calling", run_function_calling_test),
+        "4": ("Function Calling (Modified)", run_function_calling_test),
         "5": ("Reasoned Response", run_reasoned_completion_test),
         "6": ("Vision Analysis", run_vision_test),
         "7": ("Embeddings", run_embedding_test)
@@ -754,9 +1104,9 @@ if __name__ == "__main__":
     try:
         # Initialize API
         api = OllamaWrapper(
-            model="llama3.2-vision:11b",
+            model="gemma3:4b",
             auto_pull=True,
-            system_message="You are a specialized AI assistant for music video creation."
+            system_message="You are a specialized AI assistant."
         )
 
         # Test menu options

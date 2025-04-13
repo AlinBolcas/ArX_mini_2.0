@@ -31,10 +31,10 @@
 ### Image Generation with OpenAI
 
 ```python
-from src.I_integrations.openai_API import OpenAIAPI
+from src.I_integrations.openai_API import OpenAIWrapper
 
 # Initialize the API wrapper
-openai_api = OpenAIAPI(model="gpt-4o")
+openai_api = OpenAIWrapper(model="gpt-4o")
 
 # Generate an image
 image_response = openai_api.generate_image(

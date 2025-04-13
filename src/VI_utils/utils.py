@@ -203,7 +203,7 @@ colorama_init(autoreset=True)
 
 def printColoured(text, color_name):
     """
-    Color the given text with the specified color name.
+    Color the given text with the specified color name and print it directly.
     Available colors: red, green, blue, magenta, yellow, white, grey, default.
     """
     color_dict = {
@@ -219,4 +219,5 @@ def printColoured(text, color_name):
     }
     
     color_code = color_dict.get(color_name.lower(), Style.RESET_ALL)
-    return f"{color_code}{text}{Style.RESET_ALL}"
+    # Print directly instead of returning the colored string
+    print(f"{color_code}{text}{Style.RESET_ALL}")

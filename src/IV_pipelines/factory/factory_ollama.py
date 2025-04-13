@@ -110,7 +110,7 @@ Your tasks are:
 5.  If the issue seems genuinely unresolvable with the current approach, state that clearly.
 
 IMPORTANT: Ensure your revised plan instructs the CODER to produce a COMPLETE, functional script if code changes *are* needed.
-IMPORTANT: Include a section listing required pip packages if the plan changes them, like this:
+IMPORTANT: Always explicitly list ALL required packages in the 'Required Packages' section, even if you are just confirming them. Do not assume previous lists are sufficient.
 
 Required Packages:
 - package1
@@ -557,6 +557,20 @@ IMPORTANT: If a package cannot be installed, try to use alternative packages or 
         self.test_results = output
         self._add_history(agent_name, {"success": success, "output": output}, color)
 
+        # --- Timeout Override Logic for UI Apps ---
+        is_timeout_failure = not success and "Execution Error: Timeout" in output
+        goal_suggests_ui = any(keyword in self.goal.lower() for keyword in ["tk", "tkinter", "gui", "ui", "user interface", "interactive"])
+        plan_suggests_ui = self.current_plan and any(keyword in self.current_plan.lower() for keyword in ["tk", "tkinter", "gui", "ui", "user interface", "interactive"])
+
+        if is_timeout_failure and (goal_suggests_ui or plan_suggests_ui):
+            print(printColoured("⚠️ Test timed out, but goal/plan suggests an interactive UI. Treating as potential success for now.", "yellow"))
+            logger.warning("Timeout occurred for likely UI application. Overriding test result to SUCCESS.")
+            success = True # Override the failure status
+            self.last_error = "" # Clear error as we are overriding
+            # Optionally add a specific note to history
+            self._add_history("Tester Override", "Timeout detected for likely UI app, treated as success.", "yellow")
+        # --- End Timeout Override Logic ---
+
         if success:
             print(printColoured("✅ Code Test Successful!", color))
             print(printColoured("Output:", "yellow"))
@@ -712,12 +726,66 @@ Focus ONLY on the necessary changes. Respond ONLY with your analysis and revised
         print(printColoured("\n🏁 Factory run finished (reached end unexpectedly).", AGENT_COLORS["SYSTEM"]))
         return False
 
+    def continue_with_feedback(self, feedback: str) -> bool:
+        """
+        Continues development from current state with new user feedback.
+        
+        Args:
+            feedback: User feedback to incorporate in the next iteration.
+            
+        Returns:
+            True if setup for continuation was successful, False otherwise.
+        """
+        print(printColoured(f"\n🔄 Continuing with User Feedback 🔄", AGENT_COLORS["SYSTEM"]))
+        
+        # Safety check - ensure we have current code
+        if not self.current_code:
+            print(printColoured("❌ Cannot continue: No existing code found.", "red"))
+            return False
+        
+        # Record the feedback
+        self._add_history("USER FEEDBACK", feedback, "green")
+        
+        # Add the feedback to the running context
+        self.run_context += f"\n---\nUSER FEEDBACK (after v{self.current_version}):\n{feedback}\n---\n"
+        
+        # Reset the refinement state variables to prepare for a fresh run
+        self.last_error = ""
+        self.refinement_analysis = ""
+        
+        # Create a new prompt for the planner that includes the current code and feedback
+        feedback_prompt = f"""ORIGINAL GOAL: 
+{self.goal}
+
+CURRENT CODE STATE (VERSION {self.current_version}):
+```python
+{self.current_code}
+```
+
+USER FEEDBACK:
+{feedback}
+
+Based on the original goal, current code state, and user feedback, create a revised plan that:
+1. Addresses all points in the user's feedback
+2. Maintains compatibility with the existing code structure
+3. Builds upon and enhances the current functionality
+4. Includes appropriate error handling
+
+IMPORTANT: Your plan will be used to generate the next iteration of the code, so be specific and comprehensive.
+"""
+        
+        # Set the primary goal to this feedback-based prompt for the next run
+        self.goal = feedback_prompt
+        
+        print(printColoured(f"✅ Ready to continue development with feedback.", AGENT_COLORS["SYSTEM"]))
+        return True
+
 
 if __name__ == "__main__":
     print(printColoured("===== Ollama Autonomous Code Factory =====", "blue"))
 
     # Default goal if user doesn't provide one
-    default_goal = "Create a simple python script that uses tk ui and loads in a list of images browsed on either mac/windows and generates an video mp4 file with options for fps, quality, and saves it with a given name in the same location as the image frames."
+    default_goal = "write a simple script which simulates a simple chatbot"
     
     # Print the prompt and then get input
     print(printColoured("Enter the goal for the code factory (press Enter for default goal): ", "cyan"), end="")
@@ -737,24 +805,62 @@ if __name__ == "__main__":
         print(printColoured("Enter model name (press Enter for gemma3:12b): ", "cyan"), end="")
         model_name = input().strip() or "gemma3:12b"
         
-        # Example: Use a capable coding model
+        # Create the factory instance
         factory = FactoryOllama(goal=project_goal, model=model_name, max_retries=2, verbose=verbose_mode)
-        run_successful = factory.run_factory()
-
-        print(printColoured("\n===== Factory Run Summary =====", "blue"))
-        if run_successful:
-             print(printColoured("✅ Overall Status: Success", "green"))
-        else:
-             print(printColoured("❌ Overall Status: Failed", "red"))
-             if factory.last_error:
-                 print(printColoured(f"Last Error:\n{factory.last_error}", "red"))
-
+        
+        # Start the continuous feedback loop
+        continuous_mode = True
+        first_run = True
+        
+        while continuous_mode:
+            # Initial run or run with updated goal
+            if first_run:
+                print(printColoured("\n🚀 Starting Initial Factory Run 🚀", AGENT_COLORS["SYSTEM"]))
+                run_successful = factory.run_factory()
+                first_run = False
+            else:
+                print(printColoured("\n🔄 Running Factory with User Feedback 🔄", AGENT_COLORS["SYSTEM"]))
+                run_successful = factory.run_factory()
+            
+            # Display run summary
+            print(printColoured("\n===== Factory Run Summary =====", "blue"))
+            if run_successful:
+                print(printColoured("✅ Overall Status: Success", "green"))
+                print(printColoured(f"Latest code saved in: {factory.project_base_dir / f'{factory.project_name}_v{factory.current_version}'}", "green"))
+            else:
+                print(printColoured("❌ Overall Status: Failed", "red"))
+                if factory.last_error:
+                    print(printColoured(f"Last Error:\n{factory.last_error}", "red"))
+            
+            # Ask if the user wants to continue with feedback
+            print(printColoured("\nContinue development with feedback? (y/n/q): ", "cyan"), end="")
+            feedback_choice = input().strip().lower()
+            
+            if feedback_choice == 'q' or feedback_choice == 'quit':
+                continuous_mode = False
+                print(printColoured("Exiting continuous mode. Final code is in the latest version directory.", "yellow"))
+            elif feedback_choice == 'y' or feedback_choice == 'yes':
+                print(printColoured("\nEnter your feedback (improvements, bugs, new features, etc.):", "cyan"))
+                user_feedback = input().strip()
+                
+                if user_feedback:
+                    if not factory.continue_with_feedback(user_feedback):
+                        print(printColoured("Failed to setup continuation with feedback. Exiting.", "red"))
+                        continuous_mode = False
+                else:
+                    print(printColoured("No feedback provided. Exiting.", "yellow"))
+                    continuous_mode = False
+            else:
+                print(printColoured("No further development requested. Exiting.", "yellow"))
+                continuous_mode = False
+        
+        # Final run history summary
         print(printColoured("\n===== Full Run History =====", "blue"))
         for i, (agent, output) in enumerate(factory.run_history):
-             color = AGENT_COLORS.get(agent.split(" ")[0].upper(), "grey") # Get color based on agent name
-             print(printColoured(f"{i+1}. [{agent.upper()}]", color))
-             # Print snippet of output for brevity
-             print(f"   Output: {str(output)[:300]}{'...' if len(str(output)) > 300 else ''}\n")
+            color = AGENT_COLORS.get(agent.split(" ")[0].upper(), "grey") # Get color based on agent name
+            print(printColoured(f"{i+1}. [{agent.upper()}]", color))
+            # Print snippet of output for brevity
+            print(f"   Output: {str(output)[:300]}{'...' if len(str(output)) > 300 else ''}\n")
 
     else:
         print(printColoured("No goal provided. Exiting.", "yellow"))

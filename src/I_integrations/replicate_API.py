@@ -31,6 +31,7 @@ class ReplicateAPI:
         self.client = None
         if self.api_token:
             os.environ["REPLICATE_API_TOKEN"] = self.api_token
+            self.client = replicate.Client(api_token=self.api_token)
 
     def run_model(
         self,
@@ -39,7 +40,7 @@ class ReplicateAPI:
         version: Optional[str] = None
     ) -> Any:
         """
-        Run any Replicate model with given inputs and return results.
+        Run any Replicate model synchronously with given inputs and return results.
         
         Args:
             model_path: The model identifier (e.g., 'owner/model-name')
@@ -47,36 +48,47 @@ class ReplicateAPI:
             version: Optional specific model version
             
         Returns:
-            The model's output (often URLs to generated content)
+            The model's output (often URLs to generated content).
         """
         try:
-            # Pre-process any image inputs
+            # Pre-process any image inputs that look like local paths
             for key, value in input_data.items():
                 if isinstance(value, str) and (
                     key in ['image', 'image_path', 'init_image'] or 'image' in key
                 ) and not value.startswith(('http://', 'https://')):
-                    input_data[key] = self.prepare_image_input(value)
+                     if os.path.exists(value):
+                         print(f"Preparing local image input for key '{key}': {value}")
+                         prepared_input = self.prepare_image_input(value)
+                         if prepared_input is None:
+                             print(f"Warning: Failed to prepare local image {value}")
+                             continue 
+                         input_data[key] = prepared_input
+                     else:
+                        raise FileNotFoundError(f"Local image path not found for key '{key}': {value}")
             
-            # Set the complete model path with version if provided
-            if version:
-                model = f"{model_path}:{version}"
-            else:
-                model = model_path
+            # Set the complete model identifier string
+            model_identifier = f"{model_path}:{version}" if version else model_path
                 
-            # Run the model
-            output = replicate.run(model, input=input_data)
+            # Run the model synchronously using replicate.run()
+            print(f"Running model synchronously: {model_identifier}...")
+            output = replicate.run(model_identifier, input=input_data)
+            print(f"Model {model_identifier} finished.")
             
-            # Handle different output formats consistently
+            # Handle common list output format
             if isinstance(output, list) and output:
-                # Most media generation models return a list with the first item being the URL
                 return output[0]
             
             return output
             
-        except Exception as e:
-            print(f"Error running model: {e}")
+        except replicate.exceptions.ReplicateError as e:
+            print(f"Replicate API Error: {e}")
+            if "Payment required" in str(e):
+                 print("Please check your Replicate account balance.")
             return None
-
+        except Exception as e:
+            print(f"Error running model {model_path}: {type(e).__name__}: {e}")
+            return None
+        
     def prepare_image_input(self, image_path: str) -> Optional[Union[str, bytes]]:
         """
         Prepare image input for Replicate API.
@@ -85,16 +97,21 @@ class ReplicateAPI:
             image_path: Path to local image file or URL
             
         Returns:
-            URL string for remote files or file object for local files
+            URL string for remote files or uploaded local files
         """
         try:
             # If already a URL, return as is
             if image_path.startswith(('http://', 'https://')):
                 return image_path
                 
-            # If it's a local file, return file object
+            # If it's a local file, upload it to get a URL
             if os.path.exists(image_path):
-                return open(image_path, "rb")
+                # Using replicate library's built-in uploader
+                print(f"Uploading local file: {image_path}")
+                with open(image_path, "rb") as f:
+                    uploaded_url = replicate.upload(f)
+                print(f"Image uploaded successfully: {uploaded_url}")
+                return uploaded_url
                 
             raise ValueError(f"Invalid image path: {image_path}")
             
@@ -106,12 +123,8 @@ class ReplicateAPI:
         self,
         prompt: str,
         model: str = "flux-dev",
-        negative_prompt: Optional[str] = None,
         aspect_ratio: str = "3:2",
         output_format: str = "jpg",
-        raw: bool = False,
-        safety_tolerance: int = 2,  # Range 0-6, default 2
-        image_prompt_strength: float = 0.1,
     ) -> Optional[str]:
         """
         Generate image using various Replicate models.
@@ -120,12 +133,8 @@ class ReplicateAPI:
             prompt: Text description of the desired image
             model: Model to use (default: "flux-dev")
                 Options: "flux-schnell", "flux-pro", "flux-pro-ultra", "flux-dev", "recraft", "imagen-3", "imagen-3-fast"
-            negative_prompt: What to avoid (optional)
             aspect_ratio: Image aspect ratio (default: "3:2")
             output_format: Output file format (default: "jpg")
-            raw: Whether to use raw mode (default: False)
-            safety_tolerance: Safety filter level (range 0-6, default: 2)
-            image_prompt_strength: Strength of image prompt (default: 0.1)
             
         Returns:
             URL to the generated image or None if generation failed
@@ -138,10 +147,6 @@ class ReplicateAPI:
                 "output_format": output_format,
             }
             
-            # Only add negative_prompt if provided
-            if negative_prompt:
-                input_data["negative_prompt"] = negative_prompt
-
             # Determine which model to use
             model_path = None
             version = None
@@ -395,9 +400,9 @@ class ReplicateAPI:
         remove_background: bool = True,
         texture_size: int = 1024,
         mesh_simplify: float = 0.9,
-        generate_color: bool = True,
-        generate_normal: bool = True,
-        randomize_seed: bool = False,
+        generate_color: bool = False,
+        generate_normal: bool = False,
+        randomize_seed: bool = True,
         save_gaussian_ply: bool = False,
         ss_sampling_steps: int = 38,
         slat_sampling_steps: int = 12,
@@ -405,122 +410,106 @@ class ReplicateAPI:
         slat_guidance_strength: float = 3
     ) -> Optional[str]:
         """
-        Generate 3D model from an image.
+        Generate 3D model from an image using Replicate models (sync call wrapper).
+        Specifically targets ndreca/hunyuan3d-2 if model is 'hunyuan3d'.
         
         Args:
-            image_url: URL of the source image
-            model: Model to use (default: "hunyuan3d")
-                Options: "hunyuan3d", "trellis"
-            seed: Random seed for reproducibility (default: 1234)
-            steps: Number of inference steps for Hunyuan3D (default: 50)
-            guidance_scale: Guidance scale for Hunyuan3D (default: 5.5)
-            octree_resolution: Resolution of the 3D model for Hunyuan3D (default: 256)
-            remove_background: Whether to remove image background for Hunyuan3D (default: True)
-            
-            # Trellis-specific parameters
-            texture_size: Size of generated textures for Trellis (default: 1024)
-            mesh_simplify: Mesh simplification ratio for Trellis (default: 0.9)
-            generate_color: Whether to generate color textures for Trellis (default: True)
-            generate_normal: Whether to generate normal maps for Trellis (default: True)
-            randomize_seed: Whether to randomize seed for Trellis (default: False)
-            save_gaussian_ply: Whether to save Gaussian PLY file for Trellis (default: False)
-            ss_sampling_steps: Surface sampling steps for Trellis (default: 38)
-            slat_sampling_steps: SLAT sampling steps for Trellis (default: 12)
-            ss_guidance_strength: Surface sampling guidance strength for Trellis (default: 7.5)
-            slat_guidance_strength: SLAT guidance strength for Trellis (default: 3)
+            image_url: URL or local path of the source image.
+            model: Model to use (default: "hunyuan3d"). Options: "hunyuan3d", "trellis".
+            seed: Random seed for reproducibility (default: 1234).
+            steps: Number of inference steps (used by ndreca/hunyuan3d-2).
+            guidance_scale: Guidance scale (used by ndreca/hunyuan3d-2).
+            octree_resolution: Resolution (used by ndreca/hunyuan3d-2).
+            remove_background: Whether to remove image background (used by ndreca/hunyuan3d-2).
+            # Other args are for Trellis model and ignored if model='hunyuan3d'.
             
         Returns:
-            URL to the generated 3D model or None if generation failed
+            URL to the generated 3D model or None if generation failed.
         """
         try:
-            # Process image URL
-            if hasattr(image_url, 'url'):
-                image_url = image_url.url
-            
-            # Ensure we have a valid URL
-            if not isinstance(image_url, str) or not image_url.startswith(('http://', 'https://')):
-                raise ValueError(f"Invalid image URL: {image_url}. Must be a URL string.")
-            
-            # Choose the appropriate model
+            prepared_image_url = self.prepare_image_input(image_url)
+            if not prepared_image_url:
+                raise ValueError(f"Failed to prepare image input: {image_url}")
+
             if model.lower() == "hunyuan3d":
-                print(f"Generating 3D model with Hunyuan3D from image: {image_url[:50]}...")
-                
-                output = self.run_model(
-                    "tencent/hunyuan3d-2",
-                    input_data={
-                        "seed": seed,
-                        "image": image_url,
-                        "steps": steps,
-                        "guidance_scale": guidance_scale,
-                        "octree_resolution": octree_resolution,
-                        "remove_background": remove_background
-                    },
-                    version="b1b9449a1277e10402781c5d41eb30c0a0683504fb23fab591ca9dfc2aabe1cb"
-                )
-                
-                # Handle the specific output format for Hunyuan3D model
-                if isinstance(output, dict) and 'mesh' in output:
-                    if hasattr(output['mesh'], 'url'):
-                        # Extract URL from FileOutput object
-                        return output['mesh'].url
-                    else:
-                        # Try to get the URL as a string if it's directly available
-                        return output['mesh']
+                print(f"Generating 3D model with ndreca/hunyuan3d-2 from image: {prepared_image_url}...")
+                model_path = "ndreca/hunyuan3d-2"
+                version = "bbc5116baaeb6ff1ce179b26ec42a9d926c8bfecf72d2df89b07f0433678304e"
+                # Use params passed from tools.py
+                input_data = {
+                    "seed": seed,
+                    "image": prepared_image_url,
+                    "steps": steps, 
+                    "num_chunks": 200000, # Internal default
+                    "max_facenum": 50000, # Internal default
+                    "guidance_scale": guidance_scale,
+                    "octree_resolution": octree_resolution,
+                    "remove_background": remove_background
+                }
                 
             elif model.lower() == "trellis":
-                print(f"Generating 3D model with Trellis from image: {image_url[:50]}...")
-                
-                # Prepare images as a list even if only one image is provided
-                images = [image_url]
-                
-                output = self.run_model(
-                    "firtoz/trellis",
-                    input_data={
-                        "seed": seed if not randomize_seed else 0,
-                        "images": images,
-                        "texture_size": texture_size,
-                        "mesh_simplify": mesh_simplify,
-                        "generate_color": generate_color,
-                        "generate_model": True,
-                        "randomize_seed": randomize_seed,
-                        "generate_normal": generate_normal,
-                        "save_gaussian_ply": save_gaussian_ply,
-                        "ss_sampling_steps": ss_sampling_steps,
-                        "slat_sampling_steps": slat_sampling_steps,
-                        "return_no_background": remove_background,
-                        "ss_guidance_strength": ss_guidance_strength,
-                        "slat_guidance_strength": slat_guidance_strength
-                    },
-                    version="4876f2a8da1c544772dffa32e8889da4a1bab3a1f5c1937bfcfccb99ae347251"
-                )
-                
-                print("Trellis 3D model generated successfully")
-                
-                # Extract URL from Trellis output - Handle the FileOutput object correctly
-                if output and isinstance(output, dict):
-                    if "model_file" in output:
-                        # Extract URL from FileOutput object if necessary
-                        if hasattr(output["model_file"], "url"):
-                            return output["model_file"].url
-                        else:
-                            return output["model_file"]
-                
-                # If we have a direct link to the mesh (non-dictionary output)
-                if isinstance(output, str) and output.endswith((".glb", ".obj", ".fbx")):
-                    return output
-                
-                print(f"Warning: Unexpected output format from Trellis: {type(output)}")
-                # Return the raw output as a last resort - will need to be handled by the caller
-                return output
+                print(f"Generating 3D model with Trellis from image: {prepared_image_url}...")
+                model_path = "firtoz/trellis"
+                version = "4876f2a8da1c544772dffa32e8889da4a1bab3a1f5c1937bfcfccb99ae347251"
+                input_data = {
+                    "seed": seed if not randomize_seed else 0,
+                    "images": [prepared_image_url], # Trellis expects a list
+                    "texture_size": texture_size,
+                    "mesh_simplify": mesh_simplify,
+                    "generate_color": generate_color,
+                    "generate_model": True,
+                    "randomize_seed": randomize_seed,
+                    "generate_normal": generate_normal,
+                    "save_gaussian_ply": save_gaussian_ply,
+                    "ss_sampling_steps": ss_sampling_steps,
+                    "slat_sampling_steps": slat_sampling_steps,
+                    "return_no_background": remove_background, # Use Trellis param name
+                    "ss_guidance_strength": ss_guidance_strength,
+                    "slat_guidance_strength": slat_guidance_strength
+                }
                 
             else:
                 raise ValueError(f"Unsupported 3D model: {model}. Choose from: hunyuan3d, trellis")
+
+            # Run the model using the ASYNCHRONOUS method
+            output = self.run_model(
+                model_path,
+                input_data=input_data,
+                version=version
+            )
             
-            # Fallback to direct output if not in the expected format
-            return output
+            # --- Process Output --- 
+            if output is None:
+                 print(f"3D model generation failed or returned None for model {model}.")
+                 return None
+            
+            # Extract URL from potential output formats
+            final_url = None
+            if isinstance(output, str) and output.startswith('http'):
+                final_url = output
+            elif hasattr(output, 'url'): # Handle FileOutput object
+                final_url = output.url
+            elif isinstance(output, dict):
+                 if 'mesh' in output: # Hunyuan output format
+                      mesh_output = output['mesh']
+                      final_url = mesh_output.url if hasattr(mesh_output, 'url') else str(mesh_output)
+                 elif 'model_file' in output: # Trellis output format
+                      model_output = output['model_file']
+                      final_url = model_output.url if hasattr(model_output, 'url') else str(model_output)
+                 else: final_url = str(output)
+            elif isinstance(output, list) and output and isinstance(output[0], str) and output[0].startswith('http'):
+                 final_url = output[0]
+            else: final_url = str(output)
+                 
+            if final_url and final_url.startswith('http'):
+                print(f"{model.capitalize()} 3D model generated successfully: {final_url}")
+                return final_url
+            else:
+                print(f"Error: Failed to extract a valid URL from the {model} output: {output}")
+                return None
             
         except Exception as e:
-            print(f"Error generating 3D model: {type(e).__name__}: {e}")
+            print(f"Error generating 3D model with {model}: {type(e).__name__}: {e}")
             return None
 
     def download_file(self, url: str, output_dir: Optional[str] = None, filename: Optional[str] = None) -> Optional[str]:
@@ -824,8 +813,7 @@ if __name__ == "__main__":
                 image_url = api.generate_image(
                     prompt=test_prompts["image"],
                     model=model_name,
-                    aspect_ratio="16:9",
-                    safety_tolerance=6
+                    aspect_ratio="16:9"
                 )
                 
                 if image_url:
